@@ -1,22 +1,3 @@
-# Some Language
-
-> Developing...
-
-A Functional and Dependent Type Programming Language Base on Rust.
-
-## Features
-
-- Modern Syntax
-- Functional Programming
-- Dependent Types
-- The First-Class Type
-- Parsing and Type Checking
-- Many targets
-- Simple, safe and Fast
-
-## Demo
-
-```txt
 let foo = 1
 foo = 2 // Error
 let foo = "Hello, FP!"
@@ -65,5 +46,3 @@ let bar = {
 }
 
 // Token
-
-```

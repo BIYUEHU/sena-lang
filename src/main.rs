@@ -1,33 +1,45 @@
+use parser::lexer::Lexer;
 use std::io::Write;
-
-use lexer2::TokenResult;
-
-mod lexer2;
 
 const PROMPT: &str = ">> ";
 
 fn main() {
+    println!("Welcome to the Tamaki programming language REPL!");
+    println!("Input '.read <file>' to parse from a file");
+    println!("Input '.exit' to exit the REPL");
+
     let mut input = String::new();
     loop {
         print!("{}", PROMPT);
         if std::io::stdout().flush().is_err() {
             println!("error: flush err")
         }
+
         input.clear();
-        match std::io::stdin().read_line(&mut input) {
-            Ok(_) => {
-                let lexer = lexer2::Lexer::new(input.as_str());
-                for token in lexer {
-                    match token {
-                        TokenResult::Token(token) => println!(
-                            " -> type: {} | literal: {:?}",
-                            token.lexeme, token.kind
-                        ),
-                        TokenResult::Err(err) => println!(" syntax error: {}", err)
-                    }
+        std::io::stdin().read_line(&mut input).unwrap();
+
+        if input.starts_with(".exit") {
+            println!("Goodbye!");
+            break;
+        }
+
+        let code = if input.starts_with(".read") {
+            match std::fs::read_to_string(input.split_whitespace().last().unwrap()) {
+                Ok(code) => code,
+                Err(err) => {
+                    println!("REPL error: {}", err);
+                    continue;
                 }
             }
-            Err(error) => println!("error: {error}"),
+        } else {
+            input.clone()
+        };
+
+        for token in Lexer::new(code.as_str()) {
+            match token {
+                Ok(token) => println!(" -> {}", token),
+                Err(err) => println!(" {}", err),
+            }
         }
     }
 }
