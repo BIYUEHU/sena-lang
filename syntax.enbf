@@ -1,13 +1,106 @@
-<type_decl> ::= "type" <identifier> <type_params>? <type_kind>? "=" <type_expr>
+(* 顶层结构 *)
+Program        ::= Declaration*
 
-<type_params> ::= "<" <identifier> ("," <identifier>)* ">"
+(* 声明 *)
+Declaration    ::= LetDecl
+                | TypeDecl
+                | Comment
 
-<type_kind> ::= ":" <kind_expr>
-<kind_expr> ::= "Kind"
-              | <kind_expr> "->" <kind_expr>
+(* 注释 *)
+Comment        ::= LineComment | BlockComment
+LineComment    ::= "//" [^\n]*
+BlockComment   ::= "/*" [^*/]* "*/"
 
-<type_expr> ::= <type_variant> ("|" <type_variant>)*
-<type_variant> ::= <identifier> ("(" <type_arg_list>? ")")?
-<type_arg_list> ::= <type_term> ("," <type_term>)*
-<type_term> ::= <identifier>
-               | <type_term> "<" <type_arg_list> ">"
+(* Let声明 *)
+LetDecl        ::= "let" Identifier TypeAnnot? "=" Expression
+
+(* 类型声明 *)
+TypeDecl       ::= "type" Identifier TypeParams? KindAnnot? "=" TypeExpr
+
+(* 类型注解 *)
+TypeAnnot      ::= ":" TypeExpr
+
+(* 类型参数 *)
+TypeParams     ::= "<" Identifier ("," Identifier)* ">"
+
+(* Kind注解 *)
+KindAnnot      ::= ":" KindExpr
+KindExpr       ::= "Kind"
+                 | KindExpr "->" KindExpr
+                 | "(" KindExpr ")"
+
+(* 类型表达式 *)
+TypeExpr       ::= FunctionType
+                 | UnionType
+                 | TypeTerm
+
+FunctionType   ::= TypeTerm "->" TypeExpr
+UnionType      ::= TypeVariant ("|" TypeVariant)*
+TypeVariant    ::= Identifier ("(" TypeArgList? ")")?
+TypeArgList    ::= TypeExpr ("," TypeExpr)*
+TypeTerm       ::= Identifier
+                 | Identifier "<" TypeArgList ">"
+                 | "(" TypeExpr ")"
+
+(* 表达式 *)
+Expression     ::= LambdaExpr
+                | IfExpr
+                | MatchExpr
+                | LetExpr
+                | BinaryExpr
+                | UnaryExpr
+                | CallExpr
+                | BlockExpr
+                | PrimaryExpr
+
+(* Lambda表达式 *)
+LambdaExpr     ::= ParamList "=>" Expression
+ParamList      ::= Identifier
+                 | "(" (Param ("," Param)*)? ")"
+Param          ::= Identifier TypeAnnot?
+
+(* If表达式 *)
+IfExpr         ::= "if" Expression "then" Expression "else" Expression
+
+(* Match表达式 *)
+MatchExpr      ::= "match" Expression "{" MatchCase+ "}"
+MatchCase      ::= "|" Pattern "=>" Expression
+Pattern        ::= Identifier
+                | Identifier "(" (Pattern ("," Pattern)*)? ")"
+                | Literal
+
+(* Let表达式 *)
+LetExpr        ::= "let" Identifier "=" Expression "in" Expression
+
+(* 二元表达式 *)
+BinaryExpr     ::= Expression BinaryOp Expression
+BinaryOp       ::= "+" | "-" | "*" | "/" | "%" | "==" | "!="
+                 | ">" | ">=" | "<" | "<=" | "&&" | "||"
+
+(* 一元表达式 *)
+UnaryExpr      ::= UnaryOp Expression
+UnaryOp        ::= "-" | "!"
+
+(* 函数调用 *)
+CallExpr       ::= PrimaryExpr "(" (Expression ("," Expression)*)? ")"
+
+(* 块表达式 *)
+BlockExpr      ::= "{" Expression* "}"
+
+(* 基础表达式 *)
+PrimaryExpr    ::= Identifier
+                 | Literal
+                 | "(" Expression ")"
+
+(* 字面量 *)
+Literal        ::= IntLiteral
+                | FloatLiteral
+                | StringLiteral
+                | CharLiteral
+
+(* 标识符和字面量的词法规则 *)
+Identifier     ::= [a-zA-Z_][a-zA-Z0-9_]*
+IntLiteral     ::= [0-9]+
+FloatLiteral   ::= [0-9]+ "." [0-9]+
+StringLiteral  ::= "\"" [^"]* "\""
+CharLiteral    ::= "'" [^'] "'"

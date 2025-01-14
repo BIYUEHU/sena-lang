@@ -1,0 +1,42 @@
+// 类型定义
+type Bool = True | False
+type Option<T> = Some(T) | None
+type List<T> = Cons(T, List<T>) | Nil
+type Result<E, T> = Ok(T) | Err(E)
+
+// 函数定义
+let add: Int -> Int -> Int = x => y => x + y
+let add: Int -> Int -> Int = (x, y) => x + y
+
+// 复杂的类型定义
+type State: Kind -> Kind -> Kind = <S, A> State(S -> (A, S))
+
+// 模式匹配
+let map: List<A> -> (A -> B) -> List<B> =
+    (xs, f) => match xs {
+        | Nil => Nil
+        | Cons(x, xs) => Cons(f(x), map(xs, f))
+    }
+
+// if 表达式
+let max = (x: Int, y: Int): Int =>
+    if x > y then x else y
+
+// 块表达式和let绑定
+let compute = {
+    let x = 10
+    let y = 20
+    x + y
+}
+
+// 高阶函数
+let compose: (B -> C) -> (A -> B) -> (A -> C) =
+    (f, g) => x => f(g(x))
+
+// 递归函数
+let fibonacci: Int -> Int =
+    n => match n {
+        | 0 => 0
+        | 1 => 1
+        | n => fibonacci(n - 1) + fibonacci(n - 2)
+    }
