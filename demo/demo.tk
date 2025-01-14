@@ -1,8 +1,13 @@
 // 类型定义
 type Bool = True | False
-type Option<T> = Some(T) | None
-type List<T> = Cons(T, List<T>) | Nil
-type Result<E, T> = Ok(T) | Err(E)
+type Option = <T> Some(T) | None
+type List = <T> Cons(T, List<T>) | Nil
+type Result = <E, T> Ok(T) | Err(E)
+type MyType = MkMyType
+
+// 类型别名
+let String: Kind = [Char]
+let ToStringF: Kind -> Kind = t => t -> String
 
 // 函数定义
 let add: Int -> Int -> Int = x => y => x + y
@@ -11,15 +16,21 @@ let add: Int -> Int -> Int = (x, y) => x + y
 // 复杂的类型定义
 type State: Kind -> Kind -> Kind = <S, A> State(S -> (A, S))
 
-// 模式匹配
-let map: List<A> -> (A -> B) -> List<B> =
-    (xs, f) => match xs {
+// 模式匹配表达式
+let map: List(A) -> (A -> B) -> List(B) =
+    (xs, f) => match xs then
         | Nil => Nil
         | Cons(x, xs) => Cons(f(x), map(xs, f))
-    }
+
+
+// 函数调用
+map(["a", "b"], x => x + "!")
+
+// 手动指定带泛型的函数
+map<Int, String>([1, 2, 3], show)
 
 // if 表达式
-let max = (x: Int, y: Int): Int =>
+let max: Int -> Int -> Int = (x, y) =>
     if x > y then x else y
 
 // 块表达式和let绑定
@@ -35,8 +46,14 @@ let compose: (B -> C) -> (A -> B) -> (A -> C) =
 
 // 递归函数
 let fibonacci: Int -> Int =
-    n => match n {
-        | 0 => 0
+    n => match n then
         | 1 => 1
+        | 2 => 1
         | n => fibonacci(n - 1) + fibonacci(n - 2)
-    }
+    
+
+// 函数模式匹配语法糖
+let fibonacii2: Int -> Int =
+ | 1 => 1
+ | 2 => 1
+ | n => fibonacci2(n - 1) + fibonacci2(n - 2)
