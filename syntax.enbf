@@ -1,0 +1,13 @@
+<type_decl> ::= "type" <identifier> <type_params>? <type_kind>? "=" <type_expr>
+
+<type_params> ::= "<" <identifier> ("," <identifier>)* ">"
+
+<type_kind> ::= ":" <kind_expr>
+<kind_expr> ::= "Kind"
+              | <kind_expr> "->" <kind_expr>
+
+<type_expr> ::= <type_variant> ("|" <type_variant>)*
+<type_variant> ::= <identifier> ("(" <type_arg_list>? ")")?
+<type_arg_list> ::= <type_term> ("," <type_term>)*
+<type_term> ::= <identifier>
+               | <type_term> "<" <type_arg_list> ">"

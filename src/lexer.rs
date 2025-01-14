@@ -1,91 +1,6 @@
-use std::fmt::{self, Display, Formatter};
+use crate::token::{Token, TokenData, TokenError, TokenResult};
 use std::iter::Peekable;
 use std::str::Chars;
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum TokenKind {
-    LeftParen,    // (
-    RightParen,   // )
-    LeftBrace,    // {
-    RightBrace,   // }
-    LeftBracket,  // [
-    RightBracket, // ]
-    Comma,        // ,
-    Dot,          // .
-    Semicolon,    // ;
-    Colon,        // :
-
-    Plus,         // +
-    Sub,          // -
-    Mul,          // *
-    Div,          // /
-    Mod,          // %
-    Assign,       // =
-    Equal,        // ==
-    Not,          // !
-    NotEqual,     // !=
-    Greater,      // >
-    GreaterEqual, // >=
-    Less,         // <
-    LessEqual,    // <=
-    ReturnValue,  // =>
-    ReturnType,   // ->
-    Pipe,         // |
-    And,          // &&
-    Or,           // ||
-
-    Identifier(String),
-    Float(f64),
-    Int(i64),
-    String(String),
-    Char(char),
-
-    Let,
-    Type,
-    Match,
-    If,
-    Then,
-    Else,
-    In,
-
-    LineComment(String),
-    BlockComment(String),
-}
-
-pub struct Token {
-    pub kind: TokenKind,
-    pub lexeme: String,
-    pub line: usize,
-    pub column: usize,
-}
-
-impl Display for Token {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Token: {:?} | lexeme: {} | line: {}, column: {}",
-            self.kind, self.lexeme, self.line, self.column
-        )
-    }
-}
-
-pub struct TokenError {
-    pub message: String,
-    pub line: usize,
-    pub column: usize,
-}
-
-impl Display for TokenError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Syntax error: {} | line: {}, column: {}",
-            self.message, self.line, self.column
-        )
-    }
-}
-
-type TokenResult = Result<Token, TokenError>;
 
 pub struct Lexer<'a> {
     input: Peekable<Chars<'a>>,
@@ -133,34 +48,34 @@ impl Lexer<'_> {
         }
     }
 
-    fn scan_simple_token(&mut self, c: char) -> Option<TokenKind> {
+    fn scan_simple_token(&mut self, c: char) -> Option<Token> {
         match c {
-            '(' => Some(TokenKind::LeftParen),
-            ')' => Some(TokenKind::RightParen),
-            '{' => Some(TokenKind::LeftBrace),
-            '}' => Some(TokenKind::RightBrace),
-            '[' => Some(TokenKind::LeftBracket),
-            ']' => Some(TokenKind::RightBracket),
-            ',' => Some(TokenKind::Comma),
-            '.' => Some(TokenKind::Dot),
-            ';' => Some(TokenKind::Semicolon),
-            ':' => Some(TokenKind::Colon),
+            '(' => Some(Token::LeftParen),
+            ')' => Some(Token::RightParen),
+            '{' => Some(Token::LeftBrace),
+            '}' => Some(Token::RightBrace),
+            '[' => Some(Token::LeftBracket),
+            ']' => Some(Token::RightBracket),
+            ',' => Some(Token::Comma),
+            '.' => Some(Token::Dot),
+            ';' => Some(Token::Semicolon),
+            ':' => Some(Token::Colon),
             _ => None,
         }
     }
 
-    fn scan_operator(&mut self, start: char) -> Option<TokenKind> {
+    fn scan_operator(&mut self, start: char) -> Option<Token> {
         match start {
-            '+' => Some(TokenKind::Plus),
+            '+' => Some(Token::Plus),
             '-' => {
                 if let Some(&'>') = self.peek() {
                     self.advance();
-                    Some(TokenKind::ReturnType)
+                    Some(Token::ThinArrow)
                 } else {
-                    Some(TokenKind::Sub)
+                    Some(Token::Sub)
                 }
             }
-            '*' => Some(TokenKind::Mul),
+            '*' => Some(Token::Mul),
             '/' => match self.peek() {
                 Some('/') => {
                     self.advance();
@@ -172,7 +87,7 @@ impl Lexer<'_> {
                         comment.push(c);
                         self.advance();
                     }
-                    Some(TokenKind::LineComment(comment))
+                    Some(Token::LineComment(comment))
                 }
                 Some('*') => {
                     self.advance();
@@ -188,50 +103,50 @@ impl Lexer<'_> {
                         comment.push(c);
                         self.advance();
                     }
-                    Some(TokenKind::BlockComment(comment))
+                    Some(Token::BlockComment(comment))
                 }
-                _ => Some(TokenKind::Div),
+                _ => Some(Token::Div),
             },
-            '%' => Some(TokenKind::Mod),
+            '%' => Some(Token::Mod),
             '=' => match self.peek() {
                 Some(&'=') => {
                     self.advance();
-                    Some(TokenKind::Equal)
+                    Some(Token::Equal)
                 }
                 Some(&'>') => {
                     self.advance();
-                    Some(TokenKind::ReturnValue)
+                    Some(Token::Arrow)
                 }
-                _ => Some(TokenKind::Assign),
+                _ => Some(Token::Assign),
             },
             '!' => {
                 if let Some(&'=') = self.peek() {
                     self.advance();
-                    Some(TokenKind::NotEqual)
+                    Some(Token::NotEqual)
                 } else {
-                    Some(TokenKind::Not)
+                    Some(Token::Not)
                 }
             }
             '>' => {
                 if let Some(&'=') = self.peek() {
                     self.advance();
-                    Some(TokenKind::GreaterEqual)
+                    Some(Token::GreaterEqual)
                 } else {
-                    Some(TokenKind::Greater)
+                    Some(Token::Greater)
                 }
             }
             '<' => {
                 if let Some(&'=') = self.peek() {
                     self.advance();
-                    Some(TokenKind::LessEqual)
+                    Some(Token::LessEqual)
                 } else {
-                    Some(TokenKind::Less)
+                    Some(Token::Less)
                 }
             }
             '&' => {
                 if let Some(&'&') = self.peek() {
                     self.advance();
-                    Some(TokenKind::And)
+                    Some(Token::And)
                 } else {
                     None
                 }
@@ -239,16 +154,16 @@ impl Lexer<'_> {
             '|' => {
                 if let Some(&'|') = self.peek() {
                     self.advance();
-                    Some(TokenKind::Or)
+                    Some(Token::Or)
                 } else {
-                    Some(TokenKind::Pipe)
+                    Some(Token::Pipe)
                 }
             }
             _ => None,
         }
     }
 
-    fn scan_identifier(&mut self, start: char) -> TokenKind {
+    fn scan_identifier(&mut self, start: char) -> Token {
         let mut identifier = String::from(start);
         while let Some(&c) = self.peek() {
             if c.is_alphanumeric() || c == '_' {
@@ -260,18 +175,18 @@ impl Lexer<'_> {
         }
 
         match identifier.as_str() {
-            "let" => TokenKind::Let,
-            "type" => TokenKind::Type,
-            "match" => TokenKind::Match,
-            "if" => TokenKind::If,
-            "then" => TokenKind::Then,
-            "else" => TokenKind::Else,
-            "in" => TokenKind::In,
-            _ => TokenKind::Identifier(identifier),
+            "let" => Token::Let,
+            "type" => Token::Type,
+            "match" => Token::Match,
+            "if" => Token::If,
+            "then" => Token::Then,
+            "else" => Token::Else,
+            "in" => Token::In,
+            _ => Token::Ident(identifier),
         }
     }
 
-    fn scan_number(&mut self, start: char) -> Result<TokenKind, String> {
+    fn scan_number(&mut self, start: char) -> Result<Token, String> {
         let mut number = String::from(start);
         let mut saw_dot = false;
         let mut saw_e = false;
@@ -305,22 +220,22 @@ impl Lexer<'_> {
         if is_float {
             return number
                 .parse::<f64>()
-                .map(TokenKind::Float)
+                .map(Token::Float)
                 .map_err(|_| "Invalid number format".to_string());
         } else {
             return number
                 .parse::<i64>()
-                .map(TokenKind::Int)
+                .map(Token::Int)
                 .map_err(|_| "Invalid number format".to_string());
         }
     }
 
-    fn scan_string(&mut self) -> Result<TokenKind, String> {
+    fn scan_string(&mut self) -> Result<Token, String> {
         let mut string = String::new();
 
         while let Some(c) = self.advance() {
             match c {
-                '"' => return Ok(TokenKind::String(string)),
+                '"' => return Ok(Token::String(string)),
                 '\\' => {
                     if let Some(next) = self.advance() {
                         let escaped = match next {
@@ -344,10 +259,10 @@ impl Lexer<'_> {
         Err("Unterminated string".to_string())
     }
 
-    fn scan_char(&mut self) -> Result<TokenKind, String> {
+    fn scan_char(&mut self) -> Result<Token, String> {
         let c = self.advance().unwrap();
         if let Some('\'') = self.advance() {
-            Ok(TokenKind::Char(c))
+            Ok(Token::Char(c))
         } else {
             Err("Invalid character literal".to_string())
         }
@@ -435,7 +350,7 @@ impl Iterator for Lexer<'_> {
             }
         };
 
-        Some(Ok(Token {
+        Some(Ok(TokenData {
             kind,
             lexeme: self.current.clone(),
             line: self.line,
