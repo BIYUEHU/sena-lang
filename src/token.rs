@@ -28,7 +28,7 @@ pub enum Token {
     LessEqual,    // <=
     Arrow,        // =>
     ThinArrow,    // ->
-    Pipe,         // |
+    Arm,          // |
     And,          // &&
     Or,           // ||
 
@@ -45,14 +45,20 @@ pub enum Token {
     Then,
     Else,
     In,
+    Import,
+    Export,
+    From,
+    As,
 
     LineComment(String),
     BlockComment(String),
+    Eof,
+    Illegal,
 }
 
+#[derive(Debug, Clone)]
 pub struct TokenData {
-    pub kind: Token,
-    pub lexeme: String,
+    pub token: Token,
     pub line: usize,
     pub column: usize,
 }
@@ -61,26 +67,8 @@ impl Display for TokenData {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(
             f,
-            "TokenData: {:?} | lexeme: {} | line: {}, column: {}",
-            self.kind, self.lexeme, self.line, self.column
+            "TokenData: {:?} at line {}, column {}",
+            self.token, self.line, self.column
         )
     }
 }
-
-pub struct TokenError {
-    pub message: String,
-    pub line: usize,
-    pub column: usize,
-}
-
-impl Display for TokenError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Syntax error: {} | line: {}, column: {}",
-            self.message, self.line, self.column
-        )
-    }
-}
-
-pub type TokenResult = Result<TokenData, TokenError>;
