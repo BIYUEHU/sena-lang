@@ -1,9 +1,8 @@
 use std::fmt::{self, Display, Formatter};
-use std::iter::Peekable;
-use std::str::Chars;
 
 use crate::token::{Token, TokenData};
 
+#[derive(Debug)]
 pub enum LexerError {
     UnexpectedCharacter {
         ch: char,
@@ -43,54 +42,65 @@ impl Display for LexerError {
 pub type LexerResult = Result<TokenData, LexerError>;
 
 pub struct Lexer<'a> {
-    input: Peekable<Chars<'a>>,
+    input: &'a str,
+    pos: usize,
+    next_pos: usize,
     ch: char,
     line: usize,
     column: usize,
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(source: &'a str) -> Self {
-        Lexer {
-            input: source.chars().peekable(),
+    pub fn new(input: &'a str) -> Self {
+        let mut lexer = Lexer {
+            input,
+            pos: 0,
+            next_pos: 0,
             ch: '\0',
             line: 1,
             column: 0,
-        }
+        };
+        lexer.read_char();
+        lexer
     }
 
     fn skip_whitespace(&mut self) {
         loop {
             match self.ch {
-                ' ' | '\t' | '\r' => {
-                    self.column += 1;
-                    self.read();
-                }
-                '\n' => {
-                    self.line += 1;
-                    self.column = 0;
-                }
-                _ => continue,
+                ' ' | '\t' | '\r' | '\n' => self.read_char(),
+                _ => break,
             }
         }
     }
 
-    fn read(&mut self) {
-        self.ch = self.input.next().unwrap_or('\0');
-        self.column += 1;
+    fn read_char(&mut self) {
+        if self.next_pos >= self.input.len() {
+            self.ch = '\0';
+        } else {
+            self.ch = self.input.as_bytes()[self.next_pos] as char;
+            if self.ch == '\n' {
+                self.line += 1;
+                self.column = 0;
+            } else {
+                self.column += 1;
+            }
+        }
+        self.pos = self.next_pos;
+        self.next_pos += 1;
     }
 
-    fn peek(&mut self) -> char {
-        self.read();
-        self.ch
+    fn nextch_is(&mut self, ch: char) -> bool {
+        (if self.next_pos >= self.input.len() {
+            '\0'
+        } else {
+            self.input.as_bytes()[self.next_pos] as char
+        }) == ch
     }
 
-    fn next(&mut self) -> Option<LexerResult> {
+    fn next_token(&mut self) -> Option<LexerResult> {
         self.skip_whitespace();
-
         let start_column = self.column;
-
-        let token = match self.peek() {
+        let token = match self.ch {
             '(' => Token::LeftParen,
             ')' => Token::RightParen,
             '{' => Token::LeftBrace,
@@ -102,118 +112,153 @@ impl<'a> Lexer<'a> {
             ';' => Token::Semicolon,
             ':' => Token::Colon,
             '+' => Token::Plus,
-            '-' => match self.peek() {
-                '>' => Token::ThinArrow,
-                _ => Token::Sub,
-            },
-            '*' => Token::Mul,
-            '/' => match self.peek() {
-                '/' => {
-                    let mut comment = String::new();
-                    loop {
-                        if self.peek() == '\n' {
-                            break;
-                        }
-                        comment.push(self.ch);
-                    }
-                    Token::LineComment(comment)
-                }
-                '*' => {
-                    let mut comment = String::new();
-                    loop {
-                        if self.peek() == '*' {
-                            if self.peek() == '/' {
-                                break;
-                            }
-                            comment.push('*');
-                        }
-                        comment.push(self.ch);
-                    }
-                    Token::BlockComment(comment)
-                }
-                _ => Token::Div,
-            },
-            '%' => Token::Mod,
-            '=' => match self.peek() {
-                '=' => Token::Equal,
-                '>' => Token::Arrow,
-                _ => Token::Assign,
-            },
-            '!' => match self.peek() {
-                '=' => Token::NotEqual,
-                _ => Token::Not,
-            },
-            '>' => match self.peek() {
-                '=' => Token::GreaterEqual,
-                _ => Token::Greater,
-            },
-            '<' => match self.peek() {
-                '=' => Token::LessEqual,
-                _ => Token::Less,
-            },
-            '&' => match self.peek() {
-                '&' => Token::And,
-                _ => {
-                    return Some(Err(LexerError::UnexpectedCharacter {
-                        ch: '&',
-                        line: self.line,
-                        column: start_column,
-                    }))
-                }
-            },
-            '|' => match self.peek() {
-                '|' => Token::Or,
-                _ => Token::Arm,
-            },
-
-            ch if ch.is_alphabetic() || ch == '_' => self.scan_identifier(ch),
-
-            ch if ch.is_digit(10)
-                || (ch == '-' && self.peek().map_or(false, |&next| next.is_digit(10))) =>
-            {
-                match self.scan_number(ch) {
-                    Ok(token_kind) => token_kind,
-                    Err(message) => {
-                        return Err(LexerError {
-                            message,
-                            line: self.line,
-                            column: start_column,
-                        })
-                    }
+            '-' => {
+                if self.nextch_is('>') {
+                    self.read_char();
+                    Token::ThinArrow
+                } else {
+                    Token::Sub
                 }
             }
-
-            '"' => match self.scan_string() {
-                Ok(token_kind) => token_kind,
-                Err(err) => {
-                    return Err(TokenError {
-                        message: err,
-                        line: self.line,
-                        column: start_column,
-                    })
+            '*' => Token::Mul,
+            '/' => {
+                if self.nextch_is('/') {
+                    self.read_char();
+                    self.read_char();
+                    let pos = self.pos;
+                    loop {
+                        match self.ch {
+                            '\0' | '\n' => break,
+                            _ => self.read_char(),
+                        }
+                    }
+                    Token::LineComment(self.input[pos..self.pos].to_string())
+                } else if self.nextch_is('*') {
+                    self.read_char();
+                    self.read_char();
+                    let pos = self.pos;
+                    loop {
+                        let ch = self.ch;
+                        self.read_char();
+                        match ch {
+                            '\0' => {
+                                return Some(Err(LexerError::InvalidSyntax {
+                                    message: "unterminated block comment".to_string(),
+                                    line: self.line,
+                                    column: start_column,
+                                }))
+                            }
+                            '*' => {
+                                if self.nextch_is('/') {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Token::BlockComment(self.input[pos..self.pos].to_string())
+                } else {
+                    Token::Div
                 }
-            },
-
-            '\'' => match self.scan_char() {
-                Ok(token_kind) => token_kind,
-                Err(err) => {
-                    return Some(Err(TokenError {
-                        message: err,
+            }
+            '%' => Token::Mod,
+            '=' => {
+                if self.nextch_is('=') {
+                    self.read_char();
+                    Token::Equal
+                } else if self.nextch_is('>') {
+                    self.read_char();
+                    Token::Arrow
+                } else {
+                    Token::Assign
+                }
+            }
+            '!' => {
+                if self.nextch_is('=') {
+                    self.read_char();
+                    Token::NotEqual
+                } else {
+                    Token::Not
+                }
+            }
+            '>' => {
+                if self.nextch_is('=') {
+                    self.read_char();
+                    Token::GreaterEqual
+                } else {
+                    Token::Greater
+                }
+            }
+            '<' => {
+                if self.nextch_is('=') {
+                    self.read_char();
+                    Token::LessEqual
+                } else {
+                    Token::Less
+                }
+            }
+            '&' => {
+                if self.nextch_is('&') {
+                    self.read_char();
+                    Token::And
+                } else {
+                    return Some(Err(LexerError::UnexpectedCharacter {
+                        ch: '&',
+                        line: self.line - 1,
+                        column: start_column,
+                    }));
+                }
+            }
+            '|' => {
+                if self.nextch_is('|') {
+                    self.read_char();
+                    Token::Or
+                } else {
+                    Token::Arm
+                }
+            }
+            ch if ch.is_alphabetic() || ch == '_' => self.scan_identifier(),
+            '0'..='9' => match self.scan_number() {
+                Some(token_kind) => token_kind,
+                None => {
+                    return Some(Err(LexerError::InvalidSyntax {
+                        message: "invalid number".to_string(),
                         line: self.line,
                         column: start_column,
                     }))
                 }
             },
-
-            _ => {
-                return Some(Err(TokenError {
-                    message: format!("Unexpected character: {}", c),
+            '"' => match self.scan_string() {
+                Some(token) => token,
+                None => {
+                    return Some(Err(LexerError::InvalidSyntax {
+                        message: "invalid string".to_string(),
+                        line: self.line,
+                        column: start_column,
+                    }))
+                }
+            },
+            '\'' => match self.scan_char() {
+                Some(token) => token,
+                None => {
+                    return Some(Err(LexerError::InvalidSyntax {
+                        message: "invalid char".to_string(),
+                        line: self.line,
+                        column: start_column,
+                    }))
+                }
+            },
+            '\0' => return None,
+            ch => {
+                return Some(Err(LexerError::UnexpectedCharacter {
+                    ch,
                     line: self.line,
-                    column: start_column,
+                    column: self.column,
                 }))
             }
         };
 
+        self.read_char();
         Some(Ok(TokenData {
             token,
             line: self.line,
@@ -221,18 +266,17 @@ impl<'a> Lexer<'a> {
         }))
     }
 
-    fn scan_identifier(&mut self, start: char) -> Token {
-        let mut identifier = String::from(start);
+    fn scan_identifier(&mut self) -> Token {
+        let pos = self.pos;
+
         loop {
-            match self.peek() {
-                ch if ch.is_alphanumeric() || ch == '_' => {
-                    identifier.push(ch);
-                }
+            match self.ch {
+                ch if ch.is_alphanumeric() || ch == '_' => self.read_char(),
                 _ => break,
             }
         }
 
-        match identifier.as_str() {
+        match &self.input[pos..self.pos] {
             "let" => Token::Let,
             "type" => Token::Type,
             "match" => Token::Match,
@@ -240,102 +284,78 @@ impl<'a> Lexer<'a> {
             "then" => Token::Then,
             "else" => Token::Else,
             "in" => Token::In,
-            _ => Token::Ident(identifier),
+            "import" => Token::Import,
+            "export" => Token::Export,
+            "from" => Token::From,
+            "as" => Token::As,
+            str => Token::Ident(str.to_string()),
         }
     }
 
-    fn scan_number(&mut self, start: char) -> Option<Token> {
-        let mut number = String::from(start);
-        let mut saw_dot = false;
+    fn scan_number(&mut self) -> Option<Token> {
         let mut is_float = false;
+        let pos = self.pos;
 
         loop {
-            match self.peek() {
-                '0'..='9' => {
-                    number.push(self.ch);
-                }
-                // '_' => {
-                //     self.advance();
-                // }
-                '.' if !saw_dot => {
-                    saw_dot = true;
-                    number.push(self.ch);
-                    if !self.peek().is_digit(10) {
+            match self.ch {
+                '0'..='9' => self.read_char(),
+                '.' => {
+                    self.read_char();
+                    if is_float {
                         return None;
+                    }
+
+                    let ch = self.ch;
+                    self.read_char();
+                    match ch {
+                        '0'..='9' => {}
+                        _ => return None,
                     }
                     is_float = true;
                 }
-                _ => break,
+                _ => {
+                    self.next_pos = self.pos;
+                    self.pos -= 1;
+                    break;
+                }
             }
         }
 
         if is_float {
-            number
+            self.input[pos..self.pos + 1]
                 .parse::<f64>()
                 .map(|x| Some(Token::Float(x)))
                 .unwrap_or(None)
         } else {
-            number.parse::<i64>().map(|x| Some(Token::Int(x))).unwrap()
+            self.input[pos..self.pos + 1]
+                .parse::<i64>()
+                .map(|x| Some(Token::Int(x)))
+                .unwrap()
         }
     }
 
-    fn scan_string(&mut self) -> Result<Token, String> {
-        let mut string = String::new();
+    fn scan_string(&mut self) -> Option<Token> {
+        self.read_char();
+        let pos = self.pos;
 
         loop {
-            match ch {
-                '"' => {
-                    break;
-                }
-                '\\' => match self.advance() {
-                    Some('n') => string.push('\n'),
-                    Some('t') => string.push('\t'),
-                    Some('r') => string.push('\r'),
-                    Some('\\') => string.push('\\'),
-                    Some('"') => string.push('"'),
-                    Some(_) => return Err("Invalid escape sequence".to_string()),
-                    None => return Err("Unterminated escape sequence".to_string()),
-                },
-                Some('\n') => {
-                    return Err("Unterminated string: new line in string literal".to_string())
-                }
-                Some(c) => string.push(c),
-                None => return Err("Unterminated string".to_string()),
+            self.read_char();
+            match self.ch {
+                '"' => return Some(Token::String(self.input[pos..self.pos].to_string())),
+                '\0' => return None,
+                _ => {}
             }
         }
-
-        while let Some(c) = self.advance() {
-            match c {
-                '"' => return Ok(Token::String(string)),
-                '\\' => {
-                    if let Some(next) = self.advance() {
-                        let escaped = match next {
-                            'n' => '\n',
-                            't' => '\t',
-                            'r' => '\r',
-                            '\\' => '\\',
-                            '"' => '"',
-                            _ => return Err("Invalid escape sequence".to_string()),
-                        };
-                        string.push(escaped);
-                    } else {
-                        return Err("Unterminated escape sequence".to_string());
-                    }
-                }
-                '\n' => return Err("Unterminated string: new line in string literal".to_string()),
-                _ => string.push(c),
-            }
-        }
-
-        Err("Unterminated string".to_string())
     }
 
-    fn scan_char(&mut self) -> Result<Token, String> {
-        let c = self.advance().unwrap();
-        if let Some('\'') = self.advance() {
-            Ok(Token::Char(c))
+    fn scan_char(&mut self) -> Option<Token> {
+        self.read_char();
+        let ch = self.ch;
+        self.read_char();
+        if self.ch == '\'' {
+            Some(Token::Char(ch))
         } else {
-            Err("Invalid character literal".to_string())
+            None
         }
     }
 }
@@ -344,89 +364,209 @@ impl Iterator for Lexer<'_> {
     type Item = LexerResult;
 
     fn next(&mut self) -> Option<LexerResult> {
-        self.reset_current();
-        self.skip_whitespace();
-
-        let start_column = self.column;
-
-        if let None = self.peek() {
-            return None;
-        }
-
-        let c = self.advance().unwrap();
-        let kind = match c {
-            c if self.scan_simple_token(c).is_some() => self.scan_simple_token(c).unwrap(),
-
-            '+' | '-' | '*' | '/' | '%' | '=' | '!' | '>' | '<' | '|' | '&' => {
-                match self.scan_operator(c) {
-                    Some(token_kind) => token_kind,
-                    None => {
-                        return Some(Err(TokenError {
-                            message: format!("Unexpected operator: {}", c),
-                            line: self.line,
-                            column: start_column,
-                        }))
-                    }
-                }
-            }
-            c if c.is_alphabetic() || c == '_' => self.scan_identifier(c),
-
-            c if c.is_digit(10)
-                || (c == '-' && self.peek().map_or(false, |&next| next.is_digit(10))) =>
-            {
-                match self.scan_number(c) {
-                    Ok(token_kind) => token_kind,
-                    Err(message) => {
-                        return Some(Err(TokenError {
-                            message,
-                            line: self.line,
-                            column: start_column,
-                        }))
-                    }
-                }
-            }
-
-            '"' => match self.scan_string() {
-                Ok(token_kind) => token_kind,
-                Err(err) => {
-                    return Some(Err(TokenError {
-                        message: err,
-                        line: self.line,
-                        column: start_column,
-                    }))
-                }
-            },
-
-            '\'' => match self.scan_char() {
-                Ok(token_kind) => token_kind,
-                Err(err) => {
-                    return Some(Err(TokenError {
-                        message: err,
-                        line: self.line,
-                        column: start_column,
-                    }))
-                }
-            },
-
-            _ => {
-                return Some(Err(TokenError {
-                    message: format!("Unexpected character: {}", c),
-                    line: self.line,
-                    column: start_column,
-                }))
-            }
-        };
-
-        Some(Ok(TokenData {
-            kind,
-            lexeme: self.current.clone(),
-            line: self.line,
-            column: start_column,
-        }))
+        self.next_token()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    // pub use super::*;
+    pub use super::Token::*;
+    pub use super::*;
+
+    // 辅助函数：将Lexer的结果转换为Token Vec
+    fn lex(input: &str) -> Vec<Token> {
+        Lexer::new(input)
+            .filter_map(|result| result.ok())
+            .map(|token_data| token_data.token)
+            .collect()
+    }
+
+    // 辅助函数：检查是否产生预期的词法错误
+    fn expect_error(input: &str) -> LexerError {
+        Lexer::new(input)
+            .find_map(|result| result.err())
+            .expect("Expected lexer error")
+    }
+
+    #[test]
+    fn test_single_char_tokens() {
+        let tokens = lex("(){}[];,.:+-*/%");
+        assert_eq!(
+            tokens,
+            vec![
+                LeftParen,
+                RightParen,
+                LeftBrace,
+                RightBrace,
+                LeftBracket,
+                RightBracket,
+                Semicolon,
+                Comma,
+                Dot,
+                Colon,
+                Plus,
+                Sub,
+                Mul,
+                Div,
+                Mod
+            ]
+        );
+    }
+
+    #[test]
+    fn test_operators() {
+        let tokens = lex("= == ! != > >= < <= => -> && ||");
+        assert_eq!(
+            tokens,
+            vec![
+                Assign,
+                Equal,
+                Not,
+                NotEqual,
+                Greater,
+                GreaterEqual,
+                Less,
+                LessEqual,
+                Arrow,
+                ThinArrow,
+                And,
+                Or
+            ]
+        );
+    }
+
+    #[test]
+    fn test_keywords() {
+        let tokens = lex("let type match if then else in import export from as");
+        assert_eq!(
+            tokens,
+            vec![Let, Type, Match, If, Then, Else, In, Import, Export, From, As]
+        );
+    }
+
+    #[test]
+    fn test_identifiers() {
+        let tokens = lex("foo bar_123 _hidden");
+        assert_eq!(
+            tokens,
+            vec![
+                Ident("foo".to_string()),
+                Ident("bar_123".to_string()),
+                Ident("_hidden".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_numbers() {
+        let tokens = lex("123 45.67");
+        assert_eq!(tokens, vec![Int(123), Float(45.67)]);
+    }
+
+    #[test]
+    fn test_strings() {
+        let tokens = lex(r#""hello" "world\n" "escape\"quote""#);
+        assert_eq!(
+            tokens,
+            vec![
+                String("hello".to_string()),
+                String("world\n".to_string()),
+                String("escape\"quote".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_chars() {
+        let tokens = lex("'a' '\\n' '\\''");
+        assert_eq!(tokens, vec![Char('a'), Char('\n'), Char('\'')]);
+    }
+
+    #[test]
+    fn test_comments() {
+        let tokens = lex("// line comment\n/* block comment */");
+        assert_eq!(
+            tokens,
+            vec![
+                LineComment(" line comment".to_string()),
+                BlockComment(" block comment ".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_invalid_number() {
+        let error = expect_error("12.34.56");
+        assert!(matches!(
+            error,
+            LexerError::InvalidSyntax {
+                message,
+                line: 1,
+                ..
+            } if message.contains("invalid number")
+        ));
+    }
+
+    #[test]
+    fn test_unterminated_string() {
+        let error = expect_error("\"unterminated");
+        assert!(matches!(
+            error,
+            LexerError::InvalidSyntax {
+                message,
+                line: 1,
+                ..
+            } if message.contains("invalid string")
+        ));
+    }
+
+    #[test]
+    fn test_unterminated_char() {
+        let error = expect_error("'");
+        assert!(matches!(
+            error,
+            LexerError::InvalidSyntax {
+                message,
+                line: 1,
+                ..
+            } if message.contains("invalid char")
+        ));
+    }
+
+    #[test]
+    fn test_unterminated_block_comment() {
+        let error = expect_error("/* unterminated block comment");
+        assert!(matches!(
+            error,
+            LexerError::InvalidSyntax {
+                message,
+                line: 1,
+                ..
+            } if message.contains("unterminated block comment")
+        ));
+    }
+
+    #[test]
+    fn test_unexpected_character() {
+        let error = expect_error("@");
+        assert!(matches!(
+            error,
+            LexerError::UnexpectedCharacter {
+                ch: '@',
+                line: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_line_and_column_tracking() {
+        let lexer = Lexer::new("let\nx = 1");
+        let tokens: Vec<TokenData> = lexer.filter_map(Result::ok).collect();
+
+        assert_eq!(tokens[0].line, 1);
+        assert_eq!(tokens[0].column, 1);
+        assert_eq!(tokens[1].line, 2);
+        assert_eq!(tokens[1].column, 1);
+    }
 }

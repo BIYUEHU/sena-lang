@@ -1,4 +1,8 @@
-use parser::{lexer::Lexer, parser::Parser};
+use parser::{
+    lexer::{Lexer, LexerResult},
+    token::{Token, TokenData},
+};
+// use parser::parser::Parser;
 use std::io::Write;
 
 const PROMPT: &str = ">> ";
@@ -16,7 +20,7 @@ fn main() {
     println!("Input '.switch <\"lexer\"|\"parser\"|\"evaluator\">' to switch the REPL mode, default is parser");
 
     let mut input = String::new();
-    let mut mode = ReplMode::Parser;
+    let mut mode = ReplMode::Lexer;
     loop {
         print!("{}", PROMPT);
         if std::io::stdout().flush().is_err() {
@@ -65,8 +69,16 @@ fn main() {
             input.clone()
         };
 
+        // fn pl(token: LexerResult) {
+        //     match token {
+        //         Ok(token) => println!(" -> {}", token),
+        //         Err(err) => println!(" {}", err),
+        //     }
+        // }
+
         match mode {
             ReplMode::Lexer => {
+                // let l = Lexer::new(&code);
                 for token in Lexer::new(&code) {
                     match token {
                         Ok(token) => println!(" -> {}", token),
@@ -74,14 +86,14 @@ fn main() {
                     }
                 }
             }
-            ReplMode::Parser => {
-                for expr in Parser::new(Lexer::new(&code).map(|t| t.unwrap()).collect()) {
-                    match expr {
-                        Ok(expr) => println!("{:?}", expr),
-                        Err(err) => println!("Parser error: {}", err),
-                    }
-                }
-            }
+            // ReplMode::Parser => {
+            //     for expr in Parser::new(Lexer::new(&code).map(|t| t.unwrap()).collect()) {
+            //         match expr {
+            //             Ok(expr) => println!("{:?}", expr),
+            //             Err(err) => println!("Parser error: {}", err),
+            //         }
+            //     }
+            // }
             _ => {
                 println!("Not implemented yet");
             }

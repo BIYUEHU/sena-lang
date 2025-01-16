@@ -52,11 +52,9 @@ pub enum Token {
 
     LineComment(String),
     BlockComment(String),
-    Eof,
-    Illegal,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TokenData {
     pub token: Token,
     pub line: usize,
