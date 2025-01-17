@@ -100,6 +100,8 @@ impl<'a> Lexer<'a> {
     fn next_token(&mut self) -> Option<LexerResult> {
         self.skip_whitespace();
         let start_column = self.column;
+        let start_line = self.line;
+
         let token = match self.ch {
             '(' => Token::LeftParen,
             ')' => Token::RightParen,
@@ -123,40 +125,18 @@ impl<'a> Lexer<'a> {
             '*' => Token::Mul,
             '/' => {
                 if self.nextch_is('/') {
-                    self.read_char();
-                    self.read_char();
-                    let pos = self.pos;
-                    loop {
-                        match self.ch {
-                            '\0' | '\n' => break,
-                            _ => self.read_char(),
-                        }
-                    }
-                    Token::LineComment(self.input[pos..self.pos].to_string())
+                    self.scan_line_comment()
                 } else if self.nextch_is('*') {
-                    self.read_char();
-                    self.read_char();
-                    let pos = self.pos;
-                    loop {
-                        let ch = self.ch;
-                        self.read_char();
-                        match ch {
-                            '\0' => {
-                                return Some(Err(LexerError::InvalidSyntax {
-                                    message: "unterminated block comment".to_string(),
-                                    line: self.line,
-                                    column: start_column,
-                                }))
-                            }
-                            '*' => {
-                                if self.nextch_is('/') {
-                                    break;
-                                }
-                            }
-                            _ => {}
+                    match self.scan_block_comment() {
+                        Some(token) => token,
+                        None => {
+                            return Some(Err(LexerError::InvalidSyntax {
+                                message: "unterminated block comment".to_string(),
+                                line: self.line,
+                                column: start_column,
+                            }))
                         }
                     }
-                    Token::BlockComment(self.input[pos..self.pos].to_string())
                 } else {
                     Token::Div
                 }
@@ -261,7 +241,7 @@ impl<'a> Lexer<'a> {
         self.read_char();
         Some(Ok(TokenData {
             token,
-            line: self.line,
+            line: start_line,
             column: start_column,
         }))
     }
@@ -334,29 +314,90 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn handle_escape_token(&mut self, ch: char) -> Option<char> {
+        Some(match ch {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '0' => '\0',
+            '"' => '\"',
+            '\\' => '\\',
+            '\'' => '\'',
+            _ => return None,
+        })
+    }
+
     fn scan_string(&mut self) -> Option<Token> {
-        self.read_char();
-        let pos = self.pos;
+        let mut string = String::new();
 
         loop {
             self.read_char();
             match self.ch {
-                '"' => return Some(Token::String(self.input[pos..self.pos].to_string())),
+                '"' => return Some(Token::String(string)),
+                '\\' => {
+                    self.read_char();
+                    match self.handle_escape_token(self.ch) {
+                        Some(ch) => string.push(ch),
+                        None => return None,
+                    }
+                }
                 '\0' => return None,
-                _ => {}
+                ch => string.push(ch),
             }
         }
     }
 
     fn scan_char(&mut self) -> Option<Token> {
         self.read_char();
-        let ch = self.ch;
+        let ch = match self.ch {
+            '\\' => {
+                self.read_char();
+                match self.handle_escape_token(self.ch) {
+                    Some(ch) => ch,
+                    None => return None,
+                }
+            }
+            ch => ch,
+        };
         self.read_char();
         if self.ch == '\'' {
             Some(Token::Char(ch))
         } else {
             None
         }
+    }
+
+    fn scan_line_comment(&mut self) -> Token {
+        self.read_char();
+        let pos = self.next_pos;
+        loop {
+            self.read_char();
+            if self.ch == '\0' || self.ch == '\n' {
+                break;
+            }
+        }
+        Token::LineComment(self.input[pos..self.pos].to_string())
+    }
+
+    fn scan_block_comment(&mut self) -> Option<Token> {
+        self.read_char();
+        let pos = self.next_pos;
+        loop {
+            self.read_char();
+            match self.ch {
+                '\0' => return None,
+                '*' => {
+                    self.read_char();
+                    if self.ch == '/' {
+                        break;
+                    }
+                }
+                _ => continue,
+            }
+        }
+        Some(Token::BlockComment(
+            self.input[pos..self.pos - 1].to_string(),
+        ))
     }
 }
 
