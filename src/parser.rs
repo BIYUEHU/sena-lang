@@ -1,7 +1,7 @@
 use std::fmt::{self, Display, Formatter};
+use std::slice::Iter;
 
-use crate::ast::{Expr, MatchCase, Pattern, TypeVariant, TypeVariantFields};
-use crate::lexer::Lexer;
+use crate::ast::{Expr, MatchCase, Pattern, Stmt, TypeVariant, TypeVariantFields};
 use crate::token::{Token, TokenData};
 
 #[derive(Debug)]
@@ -16,7 +16,7 @@ pub enum ParseError {
         expected: &'static str,
     },
     InvalidSyntax {
-        message: String,
+        message: &'static str,
         line: usize,
         column: usize,
     },
@@ -32,11 +32,11 @@ impl Display for ParseError {
                 column,
             } => write!(
                 f,
-                "Unexpected token: expected {}, found {:?} at line {}, column {}",
+                "Unexpected token: expect {}, found {:?} at line {}, column {}",
                 expected, found, line, column
             ),
             ParseError::EndOfInput { expected } => {
-                write!(f, "Unexpected end of input: expected {}", expected)
+                write!(f, "Unexpected end of input: expect {}", expected)
             }
             ParseError::InvalidSyntax {
                 message,
@@ -52,181 +52,185 @@ impl Display for ParseError {
 }
 
 pub struct Parser<'a> {
-    lexer: Lexer<'a>,
-    current: usize,
+    iter: Iter<'a, TokenData>,
+    current_token: Token,
+    next_token: Token,
+    line: usize,
+    column: usize,
 }
 
-impl Parser {
-    pub fn new(tokens: ) -> Self {
-        Parser { tokens, current: 0 }
-    }
-
-    // 辅助方法
-    fn peek(&self) -> Option<&TokenData> {
-        self.tokens.get(self.current)
-    }
-
-    fn consume_identifier(&mut self) -> Result<String, ParseError> {
-        match self.advance() {
-            Some(TokenData {
-                kind: Token::Ident(name),
-                ..
-            }) => Ok(name),
-            Some(token) => Err(ParseError::UnexpectedToken {
-                expected: "identifier",
-                found: token.kind,
-                line: token.line,
-                column: token.column,
-            }),
-            None => Err(ParseError::EndOfInput {
-                expected: "identifier",
-            }),
-        }
-    }
-
-    fn advance(&mut self) -> Option<TokenData> {
-        if self.is_at_end() {
-            None
-        } else {
-            self.current += 1;
-            Some(self.tokens.get(self.current - 1).unwrap().clone())
-        }
-    }
-
-    fn is_at_end(&self) -> bool {
-        self.current >= self.tokens.len()
-    }
-
-    fn check(&self, token: &Token) -> bool {
-        if let Some(current) = self.peek() {
-            &current.kind == token
-        } else {
-            false
-        }
-    }
-
-    fn match_token(&mut self, token: &Token) -> bool {
-        if self.check(token) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn consume(&mut self, token: &Token, message: &'static str) -> Result<TokenData, ParseError> {
-        if self.check(token) {
-            Ok(self.advance().unwrap())
-        } else {
-            let token_data = self
-                .peek()
-                .clone()
-                .unwrap_or_else(|| self.tokens.last().unwrap());
-            Err(ParseError::UnexpectedToken {
-                expected: message,
-                found: token_data.kind.clone(),
-                line: token_data.line,
-                column: token_data.column,
-            })
-        }
-    }
-
-    // 声明解析
-    fn declaration(&mut self) -> Result<Expr, ParseError> {
-        if self.match_token(&Token::Import) {
-            self.import_declaration()
-        } else if self.match_token(&Token::Export) {
-            self.export_declaration()
-        } else if self.match_token(&Token::Let) {
-            self.let_declaration()
-        } else if self.match_token(&Token::Type) {
-            self.type_declaration()
-        } else {
-            self.expression()
-        }
-    }
-
-    // 导入声明
-    fn import_declaration(&mut self) -> Result<Expr, ParseError> {
-        let mut items = Vec::new();
-        let mut is_all = false;
-
-        if self.match_token(&Token::As) {
-            // import as name from "source"
-            is_all = true;
-            items.push(self.consume_identifier()?);
-        } else if self.match_token(&Token::LeftBrace) {
-            // import { item1, item2 } from "source"
-            loop {
-                items.push(self.consume_identifier()?);
-                if !self.match_token(&Token::Comma) {
-                    break;
-                }
-            }
-            self.consume(&Token::RightBrace, "Expect '}' after import items")?;
-        }
-
-        self.consume(&Token::From, "Expect 'from' after import declaration")?;
-        let source = match self.advance() {
-            Some(TokenData {
-                kind: Token::String(s),
-                ..
-            }) => s,
-            _ => {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "string literal",
-                    found: self.peek().unwrap().kind.clone(),
-                    line: self.peek().unwrap().line,
-                    column: self.peek().unwrap().column,
-                })
-            }
+impl<'a> Parser<'a> {
+    pub fn new(iter: Iter<'a, TokenData>) -> Self {
+        let mut parser = Parser {
+            iter,
+            current_token: Token::Eof,
+            next_token: Token::Eof,
+            line: 0,
+            column: 0,
         };
+        parser.next_token();
+        parser
+    }
 
-        Ok(Expr::Import {
-            items,
-            source,
-            is_all,
+    fn next_token(&mut self) {
+        self.current_token = self.next_token.clone();
+        self.next_token = match self.iter.next() {
+            Some(TokenData {
+                token,
+                line,
+                column,
+            }) => {
+                self.line = *line;
+                self.column = *column;
+                *token
+            }
+            None => Token::Eof,
+        };
+    }
+
+    fn next_token_is(&mut self, token: &Token) -> bool {
+        self.next_token == *token
+    }
+
+    fn next_token_consume(
+        &mut self,
+        token: &Token,
+        message: &'static str,
+    ) -> Result<(), ParseError> {
+        if self.next_token_is(token) {
+            self.next_token();
+            Ok(())
+        } else {
+            Err(self.error_unexpected_token(message))
+        }
+    }
+
+    fn error_unexpected_token<'b>(&mut self, message: &'static str) -> ParseError {
+        ParseError::UnexpectedToken {
+            expected: message,
+            found: self.current_token.clone(),
+            line: self.line,
+            column: self.column,
+        }
+    }
+
+    fn error_invalid_syntax<'b>(&mut self, message: &'static str) -> ParseError {
+        ParseError::InvalidSyntax {
+            message,
+            line: self.line,
+            column: self.column,
+        }
+    }
+
+    fn parse(&mut self) -> Option<Result<Stmt, ParseError>> {
+        self.next_token();
+        Some(match self.current_token {
+            Token::Import => self.import_declaration(),
+            Token::Export => self.export_declaration(),
+            Token::Let => self.let_declaration(),
+            Token::Type => self.type_declaration(),
+            Token::Eof => return None,
+            _ => return Some(Err(self.error_unexpected_token("expect a declaration"))),
         })
     }
 
-    // 导出声明
-    fn export_declaration(&mut self) -> Result<Expr, ParseError> {
-        let declaration = self.declaration()?;
-        Ok(Expr::Export(Box::new(declaration)))
+    fn import_declaration(&mut self) -> Result<Stmt, ParseError> {
+        let mut alias = None;
+        let mut items = vec![];
+
+        match self.next_token {
+            Token::As => {
+                self.next_token();
+                alias = Some(
+                    match &self.next_token {
+                        Token::Ident(name) => name,
+                        _ => return Err(self.error_unexpected_token("identifier after 'as'")),
+                    }
+                    .clone(),
+                )
+            }
+            Token::LeftBrace => loop {
+                self.next_token();
+                if items.len() != 0 {
+                    self.next_token_consume(&Token::Dot, "','")?
+                }
+                match &self.next_token {
+                    Token::Ident(name) => items.push(name.clone()),
+                    Token::RightBrace => break,
+                    _ => return Err(self.error_unexpected_token("identifier after 'as'")),
+                }
+            },
+            _ => return Err(self.error_invalid_syntax("expect all or part importing")),
+        }
+
+        self.next_token();
+        self.next_token_consume(&Token::From, "'from' after import declaration")?;
+        self.next_token();
+        let source = match &self.next_token {
+            Token::String(name) => name,
+            _ => return Err(self.error_unexpected_token("string literal after 'from'")),
+        }
+        .clone();
+
+        Ok(match alias {
+            Some(alias) => Stmt::ImportAll { source, alias },
+            None => Stmt::ImportSome { source, items },
+        })
     }
 
-    // let 声明
-    fn let_declaration(&mut self) -> Result<Expr, ParseError> {
-        let name = self.consume_identifier()?;
+    fn export_declaration(&mut self) -> Result<Stmt, ParseError> {
+        let only_abstract = self.next_token_is(&Token::Abstract);
+        if only_abstract {
+            self.next_token();
+        }
 
-        // 可选的类型注解
-        let type_annotation = if self.match_token(&Token::Colon) {
+        let declaration = match self.parse() {
+            Some(Ok(stmt)) if matches!(stmt, Stmt::Let { .. }) => {
+                if only_abstract {
+                    return Err(self
+                        .error_invalid_syntax("'abstract' only appears before type declaration"));
+                } else {
+                    stmt
+                }
+            }
+            Some(Ok(stmt)) if matches!(stmt, Stmt::Type { .. }) => stmt,
+            Some(Err(err)) => return Err(err),
+            _ => return Err(self.error_invalid_syntax("expect a let or type declaration")),
+        };
+
+        Ok(Stmt::Export {
+            only_abstract,
+            body: Box::new(declaration),
+        })
+    }
+
+    fn let_declaration(&mut self) -> Result<Stmt, ParseError> {
+        let name = match &self.next_token {
+            Token::Ident(name) => name,
+            _ => return Err(self.error_unexpected_token("identifyier")),
+        }
+        .clone();
+        self.next_token();
+
+        let type_annotation = if self.next_token_is(&Token::Colon) {
             Some(Box::new(self.expression()?))
         } else {
             None
         };
 
-        self.consume(&Token::Assign, "Expect '=' after variable name")?;
-
+        self.next_token_consume(&Token::Assign, "'=' after variable name")?;
         let value = Box::new(self.expression()?);
 
-        // 检查是否是 let-in 表达式
-        let body = if self.match_token(&Token::In) {
-            Some(Box::new(self.expression()?))
-        } else {
-            None
-        };
+        // TODO: Let-In expression
 
-        Ok(Expr::Let {
+        Ok(Stmt::Let {
             name,
             type_annotation,
             value,
-            body,
         })
     }
 
-    // 类型声明
-    fn type_declaration(&mut self) -> Result<Expr, ParseError> {
+    fn type_declaration(&mut self) -> Result<Stmt, ParseError> {
         let name = self.consume_identifier()?;
 
         // 可选的类型参数

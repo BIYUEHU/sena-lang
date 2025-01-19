@@ -268,6 +268,7 @@ impl<'a> Lexer<'a> {
             "export" => Token::Export,
             "from" => Token::From,
             "as" => Token::As,
+            "abstract" => Token::Abstract,
             str => Token::Ident(str.to_string()),
         }
     }

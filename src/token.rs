@@ -49,9 +49,12 @@ pub enum Token {
     Export,
     From,
     As,
+    Abstract,
 
     LineComment(String),
     BlockComment(String),
+
+    Eof,
 }
 
 #[derive(Debug, Clone, PartialEq)]
