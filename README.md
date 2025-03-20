@@ -1,8 +1,8 @@
-# Tamaki Language
+# Mihama Language
 
 > Developing...
 
-A Functional and Dependent Type Programming Language Base on Rust.
+A Modern Functional and Dependent Type Programming Language Base on Rust.
 
 ## Features
 
@@ -16,4 +16,4 @@ A Functional and Dependent Type Programming Language Base on Rust.
 
 ## Demo
 
-> demo/demo.tk
+> demo/demo.ma

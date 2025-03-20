@@ -122,7 +122,14 @@ impl<'a> Lexer<'a> {
                     Token::Sub
                 }
             }
-            '*' => Token::Mul,
+            '*' => {
+                if self.nextch_is('*') {
+                    self.read_char();
+                    Token::Pow
+                } else {
+                    Token::Mul
+                }
+            }
             '/' => {
                 if self.nextch_is('/') {
                     self.scan_line_comment()
@@ -230,11 +237,12 @@ impl<'a> Lexer<'a> {
             },
             '\0' => return None,
             ch => {
+                self.read_char();
                 return Some(Err(LexerError::UnexpectedCharacter {
                     ch,
                     line: self.line,
                     column: self.column,
-                }))
+                }));
             }
         };
 
@@ -250,13 +258,16 @@ impl<'a> Lexer<'a> {
         let pos = self.pos;
 
         loop {
-            match self.ch {
+            if self.input.len().eq(&self.next_pos) {
+                break;
+            }
+            match self.input.as_bytes()[self.next_pos] as char {
                 ch if ch.is_alphanumeric() || ch == '_' => self.read_char(),
                 _ => break,
             }
         }
 
-        match &self.input[pos..self.pos] {
+        match &self.input[pos..self.pos + 1] {
             "let" => Token::Let,
             "type" => Token::Type,
             "match" => Token::Match,
@@ -405,7 +416,7 @@ impl<'a> Lexer<'a> {
 impl Iterator for Lexer<'_> {
     type Item = LexerResult;
 
-    fn next(&mut self) -> Option<LexerResult> {
+    fn next(&mut self) -> Option<Self::Item> {
         self.next_token()
     }
 }
@@ -432,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_single_char_tokens() {
-        let tokens = lex("(){}[];,.:+-*/%");
+        let tokens = lex("(){}[];,.:+-* / **%");
         assert_eq!(
             tokens,
             vec![
@@ -450,6 +461,7 @@ mod tests {
                 Sub,
                 Mul,
                 Div,
+                Pow,
                 Mod
             ]
         );
@@ -610,5 +622,55 @@ mod tests {
         assert_eq!(tokens[0].column, 1);
         assert_eq!(tokens[1].line, 2);
         assert_eq!(tokens[1].column, 1);
+    }
+
+    #[test]
+    fn test_import_declaration() {
+        let tokens = lex(r#"import { Show, Eq } from "prelude""#);
+        assert_eq!(
+            tokens,
+            vec![
+                Import,
+                LeftBrace,
+                Ident("Show".to_string()),
+                Comma,
+                Ident("Eq".to_string()),
+                RightBrace,
+                From,
+                String("prelude".to_string())
+            ]
+        );
+
+        let tokens = lex(r#"import as std from "stdlib""#);
+        assert_eq!(
+            tokens,
+            vec![
+                Import,
+                As,
+                Ident("std".to_string()),
+                From,
+                String("stdlib".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_let_declaration() {
+        let tokens = lex(r#"let x: int = 1 + 2 * 3"#);
+        assert_eq!(
+            tokens,
+            vec![
+                Let,
+                Ident("x".to_string()),
+                Colon,
+                Ident("int".to_string()),
+                Assign,
+                Int(1),
+                Plus,
+                Int(2),
+                Mul,
+                Int(3)
+            ]
+        );
     }
 }

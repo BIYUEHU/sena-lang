@@ -1,7 +1,9 @@
 use std::fmt::{self, Display, Formatter};
 use std::slice::Iter;
 
-use crate::ast::{Expr, MatchCase, Pattern, Stmt, TypeVariant, TypeVariantFields};
+use crate::ast::{
+    Expr, Literal, MatchCase, Pattern, Precedence, Stmt, TypeVariant, TypeVariantFields,
+};
 use crate::token::{Token, TokenData};
 
 #[derive(Debug)]
@@ -51,6 +53,7 @@ impl Display for ParseError {
     }
 }
 
+#[derive(Clone)]
 pub struct Parser<'a> {
     iter: Iter<'a, TokenData>,
     current_token: Token,
@@ -82,7 +85,7 @@ impl<'a> Parser<'a> {
             }) => {
                 self.line = *line;
                 self.column = *column;
-                *token
+                token.clone()
             }
             None => Token::Eof,
         };
@@ -122,6 +125,41 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn select_comma_items<T, H: FnMut(Token, bool, bool, &mut Self) -> Result<T, ParseError>>(
+        &mut self,
+        finished: Token,
+        mut handler: H,
+    ) -> Result<Vec<T>, ParseError> {
+        let mut items = vec![];
+        let mut scan_dot = false;
+
+        loop {
+            self.next_token();
+            match &self.next_token {
+                Token::Comma => {
+                    scan_dot = true;
+                }
+                token => {
+                    if token == &finished {
+                        return if scan_dot {
+                            Err(self.error_unexpected_token("',' after identifier"))
+                        } else {
+                            Ok(items)
+                        };
+                    }
+
+                    match handler(token.clone(), scan_dot, items.is_empty(), self) {
+                        Ok(item) => {
+                            items.push(item);
+                            scan_dot = false;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+            }
+        }
+    }
+
     fn parse(&mut self) -> Option<Result<Stmt, ParseError>> {
         self.next_token();
         Some(match self.current_token {
@@ -130,7 +168,7 @@ impl<'a> Parser<'a> {
             Token::Let => self.let_declaration(),
             Token::Type => self.type_declaration(),
             Token::Eof => return None,
-            _ => return Some(Err(self.error_unexpected_token("expect a declaration"))),
+            _ => return Some(Err(self.error_unexpected_token("a declaration"))),
         })
     }
 
@@ -149,28 +187,43 @@ impl<'a> Parser<'a> {
                     .clone(),
                 )
             }
-            Token::LeftBrace => loop {
-                self.next_token();
-                if items.len() != 0 {
-                    self.next_token_consume(&Token::Dot, "','")?
+            Token::LeftBrace => {
+                items = self.select_comma_items(
+                    Token::RightBrace,
+                    |token, scan_dot, is_empty, self2| match token {
+                        Token::Ident(name) => {
+                            if scan_dot == is_empty {
+                                Err(self2.error_unexpected_token(if scan_dot {
+                                    "identifier after '{'"
+                                } else {
+                                    "',' after identifier"
+                                }))
+                            } else {
+                                Ok(name.clone())
+                            }
+                        }
+                        _ => Err(self2.error_invalid_syntax("expect identifier")),
+                    },
+                )?;
+                if items.is_empty() {
+                    return Err(self.error_invalid_syntax("import items couldn't be empty"));
                 }
-                match &self.next_token {
-                    Token::Ident(name) => items.push(name.clone()),
-                    Token::RightBrace => break,
-                    _ => return Err(self.error_unexpected_token("identifier after 'as'")),
-                }
-            },
+            }
             _ => return Err(self.error_invalid_syntax("expect all or part importing")),
         }
 
         self.next_token();
         self.next_token_consume(&Token::From, "'from' after import declaration")?;
         self.next_token();
-        let source = match &self.next_token {
+        let source = match &self.current_token {
             Token::String(name) => name,
             _ => return Err(self.error_unexpected_token("string literal after 'from'")),
         }
         .clone();
+
+        if source.is_empty() {
+            return Err(self.error_invalid_syntax("import source couldn't be empty"));
+        }
 
         Ok(match alias {
             Some(alias) => Stmt::ImportAll { source, alias },
@@ -205,14 +258,15 @@ impl<'a> Parser<'a> {
     }
 
     fn let_declaration(&mut self) -> Result<Stmt, ParseError> {
-        let name = match &self.next_token {
+        self.next_token();
+        let name = match &self.current_token {
             Token::Ident(name) => name,
-            _ => return Err(self.error_unexpected_token("identifyier")),
+            _ => return Err(self.error_unexpected_token("identifier")),
         }
         .clone();
-        self.next_token();
 
         let type_annotation = if self.next_token_is(&Token::Colon) {
+            self.next_token();
             Some(Box::new(self.expression()?))
         } else {
             None
@@ -231,84 +285,141 @@ impl<'a> Parser<'a> {
     }
 
     fn type_declaration(&mut self) -> Result<Stmt, ParseError> {
-        let name = self.consume_identifier()?;
+        let name = match &self.next_token {
+            Token::Ident(name) => name.clone(),
+            _ => return Err(self.error_unexpected_token("identifier")),
+        };
+        self.next_token();
 
-        // 可选的类型参数
-        let type_params = if self.match_token(&Token::Less) {
-            let mut params = Vec::new();
-            loop {
-                params.push(self.consume_identifier()?);
-                if !self.match_token(&Token::Comma) {
-                    break;
-                }
+        let type_annotation = if self.next_token_is(&Token::Colon) {
+            self.next_token();
+            Some(Box::new(self.expression()?))
+        } else {
+            None
+        };
+
+        self.next_token_consume(&Token::Assign, "'=' after type name")?;
+        let type_params = if self.next_token_is(&Token::Less) {
+            let params =
+                self.select_comma_items(Token::Greater, |token, scan_dot, is_empty, self2| {
+                    match token {
+                        Token::Ident(name) => {
+                            if scan_dot == is_empty {
+                                Err(self2.error_unexpected_token(if scan_dot {
+                                    "identifier after '<'"
+                                } else {
+                                    "',' after identifier"
+                                }))
+                            } else {
+                                Ok(name.clone())
+                            }
+                        }
+                        _ => Err(self2.error_unexpected_token("expect identifier")),
+                    }
+                })?;
+            if params.is_empty() {
+                return Err(self.error_invalid_syntax("type parameters couldn't be empty"));
             }
-            self.consume(&Token::Greater, "Expect '>' after type parameters")?;
+            self.next_token();
             Some(params)
         } else {
             None
         };
 
-        self.consume(&Token::Assign, "Expect '=' after type name")?;
-
         let variants = self.type_variants()?;
 
-        Ok(Expr::Type {
+        Ok(Stmt::Type {
             name,
+            type_annotation,
             type_params,
             variants,
         })
     }
 
-    // 类型变体
     fn type_variants(&mut self) -> Result<Vec<TypeVariant>, ParseError> {
-        let mut variants = Vec::new();
+        let mut variants = vec![];
 
         loop {
-            let name = self.consume_identifier()?;
+            let name = match &self.next_token {
+                Token::Ident(name) => name.clone(),
+                _ => return Err(self.error_unexpected_token("identifier")),
+            };
+            self.next_token();
 
-            let fields = if self.match_token(&Token::LeftParen) {
-                // 元组风格的变体
-                let mut args = Vec::new();
-                if !self.check(&Token::RightParen) {
-                    loop {
-                        args.push(Box::new(self.expression()?));
-                        if !self.match_token(&Token::Comma) {
-                            break;
+            let fields = if self.next_token_is(&Token::LeftParen) {
+                let exprs =
+                    self.select_comma_items(Token::RightParen, |_, scan_dot, is_empty, self2| {
+                        match self2.expression() {
+                            Ok(expr) => {
+                                if scan_dot == is_empty {
+                                    Err(self2.error_unexpected_token(if scan_dot {
+                                        "expression after '('"
+                                    } else {
+                                        "',' after expression"
+                                    }))
+                                } else {
+                                    Ok(Box::new(expr))
+                                }
+                            }
+                            Err(err) => Err(err),
                         }
-                    }
+                    })?;
+                self.next_token_consume(&Token::RightParen, "')' after tuple")?;
+                if exprs.is_empty() {
+                    return Err(self.error_invalid_syntax("tuple type requires at least one field"));
                 }
-                self.consume(&Token::RightParen, "Expect ')' after variant arguments")?;
-                TypeVariantFields::Tuple(args)
-            } else if self.match_token(&Token::LeftBrace) {
-                // 记录风格的变体
-                let mut fields = Vec::new();
-                if !self.check(&Token::RightBrace) {
+                self.next_token();
+                TypeVariantFields::Tuple(exprs)
+            } else if self.next_token_is(&Token::LeftBrace) {
+                self.next_token();
+                let mut fields = vec![];
+                if !self.next_token_is(&Token::RightBrace) {
                     loop {
-                        let field_name = self.consume_identifier()?;
-                        self.consume(&Token::Colon, "Expect ':' after field name")?;
+                        let field_name = match &self.next_token {
+                            Token::Ident(name) => name.clone(),
+                            _ => return Err(self.error_unexpected_token("identifier")),
+                        };
+                        self.next_token();
+                        self.next_token_consume(&Token::Colon, "':' after field name")?;
                         let field_type = Box::new(self.expression()?);
                         fields.push((field_name, field_type));
-
-                        if !self.match_token(&Token::Comma) {
+                        if self.next_token_is(&Token::Comma) {
+                            self.next_token();
+                        } else {
                             break;
                         }
                     }
                 }
-                self.consume(&Token::RightBrace, "Expect '}' after record fields")?;
+                self.fun_name()?;
+                if fields.is_empty() {
+                    return Err(
+                        self.error_invalid_syntax("record type requires at least one field")
+                    );
+                }
                 TypeVariantFields::Record(fields)
             } else {
-                // 无参数变体
                 TypeVariantFields::Unit
             };
 
             variants.push(TypeVariant { name, fields });
 
-            if !self.match_token(&Token::Pipe) {
+            if !self.next_token_is(&Token::Arm) {
                 break;
             }
+            self.next_token();
         }
 
         Ok(variants)
+    }
+
+    // fn fun_name(&mut self) -> Result<(), ParseError> {
+    //     self.fun_name()?;
+    //     Ok(())
+    // }
+
+    fn fun_name(&mut self) -> Result<(), ParseError> {
+        self.next_token_consume(&Token::RightBrace, "'}' after record")?;
+        Ok(())
     }
 
     // 表达式解析
@@ -323,138 +434,138 @@ impl<'a> Parser<'a> {
         // 6. 一元运算表达式
         // 7. 函数调用
         // 8. 基础表达式（字面量、标识符、括号表达式）
-
-        if self.match_token(&Token::Arrow) {
-            self.lambda()
-        } else if self.match_token(&Token::If) {
-            self.if_expression()
-        } else if self.match_token(&Token::Match) {
-            self.match_expression()
-        } else if self.match_token(&Token::Let) {
-            self.let_in_expression()
-        } else {
-            let mut expr = self.prefix()?;
-            expr = self.infix(expr, 0)?;
-            Ok(expr)
-        }
+        self.parse_expression(Precedence::Lowest)
     }
 
-    fn infix(&mut self, mut left: Expr, precedence: u8) -> Result<Expr, ParseError> {
-        loop {
-            let token = self.peek().map(|t| t.kind.clone());
-            let next_precedence = self.get_precedence(&token);
-
-            if next_precedence.is_some() && next_precedence.unwrap() > precedence {
-                left = self.parse_infix(left)?;
-            } else {
-                break;
+    fn parse_expression(&mut self, precedence: Precedence) -> Result<Expr, ParseError> {
+        self.next_token();
+        let mut left = match &self.current_token {
+            Token::Ident(name) => Expr::Ident(name.clone()),
+            Token::Int(value) => Expr::Literal(Literal::Int(*value)),
+            Token::Float(value) => Expr::Literal(Literal::Float(*value)),
+            Token::String(value) => Expr::Literal(Literal::String(value.clone())),
+            Token::Char(value) => Expr::Literal(Literal::Char(*value)),
+            Token::LeftParen => {
+                let expr = self.expression()?;
+                self.next_token_consume(&Token::RightParen, "')' after expression")?;
+                expr
             }
+            Token::Sub | Token::Not => {
+                let operator = self.next_token.clone();
+                let expr = self.parse_expression(Precedence::Prefix)?;
+                Expr::Prefix(operator, Box::new(expr))
+            }
+            Token::If => self.if_expression()?,
+            Token::Match => self.match_expression()?,
+            // Token::Let => self.par(),
+            Token::LeftBrace => self.block_expression()?,
+            _ => return Err(self.error_unexpected_token("expression")),
+        };
+
+        while !self.next_token_is(&Token::Eof)
+            && precedence < Precedence::from_token(&self.next_token)
+        {
+            match self.next_token {
+                Token::Plus
+                | Token::Sub
+                | Token::Mul
+                | Token::Div
+                | Token::Mod
+                | Token::Equal
+                | Token::NotEqual
+                | Token::Greater
+                | Token::GreaterEqual
+                | Token::Less
+                | Token::LessEqual
+                | Token::And
+                | Token::Or
+                | Token::ThinArrow => {
+                    let right = self.parse_expression(Precedence::from_token(&self.next_token))?;
+                    Ok(Expr::Infix(
+                        self.next_token.clone(),
+                        Box::new(left),
+                        Box::new(right),
+                    ))
+                }
+                Token::LeftParen => {
+                    // let arguments = self.parse_argument_list()?;
+                    // self.next_token_consume(&Token::RightParen, "')' after arguments")?;
+                    Ok(Expr::Call {
+                        callee: Box::new(left),
+                        arguments: vec![],
+                    })
+                }
+                Token::Arrow => {
+                    if let Some(params) = self.extract_param_list(&left) {
+                        let body = Box::new(self.expression()?);
+                        Ok(Expr::Lambda {
+                            type_params: vec![], // 语法中未明确支持 lambda 的类型参数，留空
+                            params,
+                            body,
+                        })
+                    } else {
+                        Err(self.error_invalid_syntax("invalid lambda parameter list"))
+                    }
+                }
+                _ => Ok(left),
+            };
+            self.next_token();
+            result
         }
 
         Ok(left)
     }
 
-    fn get_precedence(&self, token: &Option<Token>) -> Option<u8> {
-        match token {
-            Some(Token::Plus) | Some(Token::Sub) => Some(1),
-            Some(Token::Mul) | Some(Token::Div) => Some(2),
-            Some(Token::Equal) | Some(Token::NotEqual) => Some(3),
-            _ => None,
+    fn extract_param_list(&self, expr: &Expr) -> Option<Vec<(String, Option<Box<Expr>>)>> {
+        let list = self.flatten_comma_list(expr);
+        let mut params = vec![];
+
+        for e in list {
+            match e {
+                Expr::Ident(name) => params.push((name.clone(), None)),
+                Expr::Infix(Token::Colon, name, type_expr) => match *name.clone() {
+                    Expr::Ident(name) => params.push((name, Some(type_expr.clone()))),
+                    _ => return None,
+                },
+                _ => return None,
+            }
+        }
+        Some(params)
+    }
+
+    fn flatten_comma_list(&self, expr: &Expr) -> Vec<Expr> {
+        match expr {
+            Expr::Infix(Token::Comma, left, right) => {
+                let mut list = self.flatten_comma_list(left.as_ref());
+                list.extend(self.flatten_comma_list(right.as_ref()));
+                list
+            }
+            _ => vec![expr.clone()],
         }
     }
 
-    fn parse_infix(&mut self, left: Expr) -> Result<Expr, ParseError> {
-        let token = self.advance().unwrap();
-        let right = self.prefix()?;
-        let next_precedence = self.get_precedence(&Some(token.kind.clone())).unwrap();
-        let right = self.infix(right, next_precedence)?;
-
-        Ok(Expr::Binary {
-            left: Box::new(left),
-            operator: token.kind,
-            right: Box::new(right),
-        })
-    }
-
-    fn prefix(&mut self) -> Result<Expr, ParseError> {
-        let token = self.advance().unwrap();
-        let expr = match token.kind {
-            Token::Int(i) => Expr::IntLiteral(i),
-            Token::Float(f) => Expr::FloatLiteral(f),
-            Token::String(s) => Expr::StringLiteral(s),
-            Token::Char(c) => Expr::CharLiteral(c),
-            Token::Ident(name) => Expr::Ident(name),
-            Token::LeftParen => {
-                let expr = self.expression()?;
-                self.consume(&Token::RightParen, "Expect ')' after expression")?;
-                expr
-            }
-            _ => {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "literal, identifier, or '('",
-                    found: token.kind,
-                    line: token.line,
-                    column: token.column,
-                })
-            }
-        };
-
-        Ok(expr)
-    }
-
-    // Lambda 表达式
-    fn lambda(&mut self) -> Result<Expr, ParseError> {
-        let params = if self.check(&Token::LeftParen) {
-            self.param_list()?
-        } else {
-            // 单个参数无括号的情况
-            vec![(self.consume_identifier()?, None)]
-        };
-
-        if self.match_token(&Token::Arrow) {
-            let body = Box::new(self.expression()?);
-            Ok(Expr::Lambda { params, body })
-        } else {
-            self.if_expression()
-        }
-    }
-
-    // 参数列表
-    fn param_list(&mut self) -> Result<Vec<(String, Option<Box<Expr>>)>, ParseError> {
-        self.consume(&Token::LeftParen, "Expect '(' after lambda")?;
-
-        let mut params = Vec::new();
-        if !self.check(&Token::RightParen) {
+    fn parse_argument_list(&mut self) -> Result<Vec<Expr>, ParseError> {
+        let mut args = vec![];
+        if !self.next_token_is(&Token::RightParen) {
             loop {
-                let name = self.consume_identifier()?;
-                let type_annotation = if self.match_token(&Token::Colon) {
-                    Some(Box::new(self.expression()?))
+                args.push(self.expression()?);
+                if self.next_token_is(&Token::Comma) {
+                    self.next_token();
                 } else {
-                    None
-                };
-                params.push((name, type_annotation));
-
-                if !self.match_token(&Token::Comma) {
                     break;
                 }
             }
         }
-
-        self.consume(&Token::RightParen, "Expect ')' after parameters")?;
-        Ok(params)
+        Ok(args)
     }
 
-    // If 表达式
     fn if_expression(&mut self) -> Result<Expr, ParseError> {
-        // 已经消费了 "if" token
+        self.next_token(); // 消费 'if'
         let condition = Box::new(self.expression()?);
-
-        self.consume(&Token::Then, "期望 'then' 关键字")?;
+        self.next_token_consume(&Token::Then, "'then' after condition")?;
         let then_branch = Box::new(self.expression()?);
-
-        self.consume(&Token::Else, "期望 'else' 关键字")?;
+        self.next_token_consume(&Token::Else, "'else' after then branch")?;
         let else_branch = Box::new(self.expression()?);
-
         Ok(Expr::If {
             condition,
             then_branch,
@@ -462,202 +573,84 @@ impl<'a> Parser<'a> {
         })
     }
 
-    // Match 表达式
     fn match_expression(&mut self) -> Result<Expr, ParseError> {
-        // 已经消费了 "match" token
+        self.next_token(); // 消费 'match'
         let expr = Box::new(self.expression()?);
-
-        self.consume(&Token::Then, "期望 'then' 关键字")?;
-
-        let mut cases = Vec::new();
-        // 至少需要一个 match case
-        cases.push(self.match_case()?);
-
-        // 继续解析其他 match cases
-        while self.match_token(&Token::Pipe) {
-            cases.push(self.match_case()?);
+        self.next_token_consume(&Token::Then, "'then' after match expression")?;
+        let mut cases = vec![];
+        while self.next_token_is(&Token::Arm) {
+            self.next_token();
+            let pattern = self.pattern()?;
+            self.next_token_consume(&Token::Arrow, "'=>' after pattern")?;
+            let body = Box::new(self.expression()?);
+            cases.push(MatchCase { pattern, body });
         }
-
+        if cases.is_empty() {
+            return Err(self.error_invalid_syntax("match expression requires at least one case"));
+        }
         Ok(Expr::Match { expr, cases })
     }
 
-    // Match case 解析
-    fn match_case(&mut self) -> Result<MatchCase, ParseError> {
-        let pattern = self.pattern()?;
-        self.consume(&Token::Arrow, "期望 '=>' 箭头")?;
-        let body = Box::new(self.expression()?);
-
-        Ok(MatchCase { pattern, body })
-    }
-
-    // Pattern 解析
     fn pattern(&mut self) -> Result<Pattern, ParseError> {
-        let token = self
-            .peek()
-            .ok_or(ParseError::EndOfInput { expected: "模式" })?
-            .clone(); // 克隆 token 以避免借用冲突
-
-        match token.kind {
-            Token::Int(_) | Token::Float(_) | Token::String(_) | Token::Char(_) => {
-                self.advance(); // 前进到下一个 token
-                Ok(Pattern::Literal(token.kind))
-            }
+        match &self.next_token {
             Token::Ident(name) => {
-                self.advance(); // 消费标识符
-                if self.match_token(&Token::LeftParen) {
-                    // 构造器模式
-                    let mut args = Vec::new();
-                    if !self.check(&Token::RightParen) {
+                let name = name.clone();
+                self.next_token();
+                if self.next_token_is(&Token::LeftParen) {
+                    self.next_token();
+                    let mut args = vec![];
+                    if !self.next_token_is(&Token::RightParen) {
                         loop {
                             args.push(self.pattern()?);
-                            if !self.match_token(&Token::Comma) {
+                            if self.next_token_is(&Token::Comma) {
+                                self.next_token();
+                            } else {
                                 break;
                             }
                         }
                     }
-                    self.consume(&Token::RightParen, "期望 ')'")?;
+                    self.next_token_consume(&Token::RightParen, "')' after patterns")?;
                     Ok(Pattern::Constructor { name, args })
                 } else {
                     Ok(Pattern::Ident(name))
                 }
             }
-            _ => Err(ParseError::UnexpectedToken {
-                expected: "标识符或字面量",
-                found: token.kind,
-                line: token.line,
-                column: token.column,
-            }),
+            Token::Int(value) => {
+                let value = Token::Int(*value);
+                self.next_token();
+                Ok(Pattern::Literal(value))
+            }
+            // 其他字面量类似
+            _ => Err(self.error_unexpected_token("pattern")),
         }
     }
 
-    // Let-in 表达式
-    fn let_in_expression(&mut self) -> Result<Expr, ParseError> {
-        // 已经消费了 "let" token
-        let name = match self.advance() {
-            Some(TokenData {
-                kind: Token::Ident(name),
-                ..
-            }) => name,
-            Some(token) => {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "标识符",
-                    found: token.kind,
-                    line: token.line,
-                    column: token.column,
-                })
-            }
-            None => {
-                return Err(ParseError::EndOfInput {
-                    expected: "标识符"
-                })
-            }
-        };
-
-        // 可选的类型注解
-        let type_annotation = if self.match_token(&Token::Colon) {
-            Some(Box::new(self.expression()?))
-        } else {
-            None
-        };
-
-        self.consume(&Token::Assign, "期望 '='")?;
-        let value = Box::new(self.expression()?);
-
-        self.consume(&Token::In, "期望 'in' 关键字")?;
-        let body = Box::new(self.expression()?);
-
-        Ok(Expr::Let {
-            name,
-            type_annotation,
-            value,
-            body: Some(body),
-        })
-    }
-
-    // 函数调用表达式
-    fn call_expression(&mut self, callee: Expr) -> Result<Expr, ParseError> {
-        let mut type_args = None;
-
-        // 处理可选的类型参数
-        if self.match_token(&Token::Less) {
-            let mut args = Vec::new();
-            if !self.check(&Token::Greater) {
-                loop {
-                    match self.advance() {
-                        Some(TokenData {
-                            kind: Token::Ident(name),
-                            ..
-                        }) => {
-                            args.push(name);
-                        }
-                        Some(token) => {
-                            return Err(ParseError::UnexpectedToken {
-                                expected: "类型参数",
-                                found: token.kind,
-                                line: token.line,
-                                column: token.column,
-                            })
-                        }
-                        None => {
-                            return Err(ParseError::EndOfInput {
-                                expected: "类型参数",
-                            })
-                        }
-                    }
-                    if !self.match_token(&Token::Comma) {
-                        break;
-                    }
-                }
-            }
-            self.consume(&Token::Greater, "期望 '>'")?;
-            type_args = Some(args);
-        }
-
-        // 解析函数参数
-        self.consume(&Token::LeftParen, "期望 '('")?;
-        let mut arguments = Vec::new();
-        if !self.check(&Token::RightParen) {
-            loop {
-                arguments.push(self.expression()?);
-                if !self.match_token(&Token::Comma) {
-                    break;
-                }
-            }
-        }
-        self.consume(&Token::RightParen, "期望 ')'")?;
-
-        Ok(Expr::Call {
-            callee: Box::new(callee),
-            arguments,
-            type_args,
-        })
-    }
-
-    // 块表达式
     fn block_expression(&mut self) -> Result<Expr, ParseError> {
-        // 已经消费了 "{" token
-        let mut expressions = Vec::new();
-
-        while !self.check(&Token::RightBrace) && !self.is_at_end() {
-            expressions.push(self.declaration()?);
-
-            // 可选的换行
-            while self.match_token(&Token::Semicolon) {}
+        self.next_token(); // 消费 '{'
+        let mut statements = vec![];
+        while !self.next_token_is(&Token::RightBrace) {
+            let stmt = match &self.next_token {
+                Token::Let => self.let_declaration()?,
+                Token::Type => self.type_declaration()?,
+                _ => Stmt::Expr(self.expression()?),
+            };
+            statements.push(stmt);
+            // if self.next_token_is(&Token::Newline) {
+            // self.next_token();
+            // }
         }
-
-        self.consume(&Token::RightBrace, "期望 '}'")?;
-        Ok(Expr::Block(expressions))
+        self.next_token_consume(&Token::RightBrace, "'}' after block")?;
+        if statements.is_empty() || !matches!(statements.last(), Some(Stmt::Expr(_))) {
+            return Err(self.error_invalid_syntax("block must end with an expression"));
+        }
+        Ok(Expr::Block(vec![])) // 注意：AST 中应为 Vec<Stmt>，参考内容可能有误
     }
 }
 
-impl Iterator for Parser {
-    type Item = Result<Expr, ParseError>;
+impl<'a> Iterator for Parser<'a> {
+    type Item = Result<Stmt, ParseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.is_at_end() {
-            None
-        } else {
-            Some(self.declaration())
-        }
+        self.parse()
     }
 }

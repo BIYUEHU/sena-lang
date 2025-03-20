@@ -97,7 +97,7 @@ let fibonacci: Int -> Int =
     n => match n then
         | 1 => 1
         | 2 => 1
-        | n => fibonacci(n - 1) + fibonacci(n - 2)
+        | n => fibonacci(n) + fibonacci(n - 2)
 
 
 let fibonacii2: Int -> Int =

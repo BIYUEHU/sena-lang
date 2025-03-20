@@ -29,7 +29,7 @@ pub enum Expr {
         value: Box<Expr>,
         body: Box<Expr>,
     },
-
+    Literal(Literal),
     Block(Vec<Expr>),
 }
 

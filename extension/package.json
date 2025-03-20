@@ -1,0 +1,37 @@
+{
+  "name": "mihama-language",
+  "displayName": "Mihama Language",
+  "description": "Supports for Mihama Language",
+  "license": "MIT",
+  "publisher": "Arimura Sena",
+  "repository": "https://github.com/biyuehu/misakura",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.0.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mihama",
+        "aliases": [
+          "ma",
+          "Mihama",
+          "mihama"
+        ],
+        "extensions": [
+          ".ma"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mihama",
+        "scopeName": "source.mihama",
+        "path": "./syntaxes/ma.tmLanguage.json"
+      }
+    ]
+  }
+}

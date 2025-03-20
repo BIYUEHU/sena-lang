@@ -17,6 +17,7 @@ pub enum Token {
     Sub,          // -
     Mul,          // *
     Div,          // /
+    Pow,          // **
     Mod,          // %
     Assign,       // =
     Equal,        // ==
