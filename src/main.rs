@@ -1,5 +1,9 @@
+use parser::ast::Stmt;
+use parser::evaluator::env::Env;
+use parser::evaluator::object::Object;
+use parser::evaluator::Evaluator;
+use parser::lexer::Lexer;
 use parser::parser::Parser;
-use parser::{lexer::Lexer, token::TokenData};
 use std::io::Write;
 
 const PROMPT: &str = ">> ";
@@ -10,14 +14,62 @@ enum ReplMode {
     Evaluator,
 }
 
+fn get_parser(code: &str) -> Result<Parser, String> {
+    let mut error = None;
+    let token_data = Lexer::new(code)
+        .filter_map(|result| match result {
+            Ok(token_data) => Some(token_data),
+            Err(err) => {
+                if error.is_none() {
+                    error = Some(format!("Lexer error: {}", err));
+                }
+                None
+            }
+        })
+        .collect();
+
+    if let Some(err) = error {
+        Err(err)
+    } else {
+        Ok(Parser::new(token_data, true))
+    }
+}
+
+fn get_evaluator(code: &str, evaluator: &mut Evaluator) -> Result<Object, String> {
+    let parser = get_parser(code)?;
+    let mut error = None;
+    let program = parser
+        .filter_map(|result| match result {
+            Ok(stmt) => Some(stmt),
+            Err(err) => {
+                if error.is_none() {
+                    error = Some(format!("Parser error: {}", err));
+                }
+                None
+            }
+        })
+        .collect::<Vec<Stmt>>();
+
+    if let Some(err) = error {
+        Err(err)
+    } else {
+        evaluator
+            .eval(&program)
+            .map_err(|err| format!("Evaluator error: {}", err))
+    }
+}
+
 fn main() {
-    println!("Welcome to the Tamaki programming language REPL!");
+    println!("Welcome to the Mihama programming language REPL!");
     println!("Input '.read <file>' to parse from a file");
     println!("Input '.exit' to exit the REPL");
     println!("Input '.switch <\"lexer\"|\"parser\"|\"evaluator\">' to switch the REPL mode, default is parser");
 
     let mut input = String::new();
-    let mut mode = ReplMode::Parser;
+    let mut mode = ReplMode::Evaluator;
+
+    let mut evaluator = Evaluator::new(Env::new());
+
     loop {
         print!("{}", PROMPT);
         if std::io::stdout().flush().is_err() {
@@ -54,7 +106,15 @@ fn main() {
             continue;
         }
 
+        if input.starts_with(".clear") {
+            evaluator = Evaluator::new(Env::new());
+            continue;
+        }
+
         let code = if input.starts_with(".read") {
+            if input.starts_with(".readc") {
+                evaluator = Evaluator::new(Env::new());
+            }
             match std::fs::read_to_string(input.split_whitespace().last().unwrap()) {
                 Ok(code) => code,
                 Err(err) => {
@@ -66,38 +126,30 @@ fn main() {
             input.clone()
         };
 
-        // fn pl(token: LexerResult) {
-        //     match token {
-        //         Ok(token) => println!(" -> {}", token),
-        //         Err(err) => println!(" {}", err),
-        //     }
-        // }
-
         match mode {
             ReplMode::Lexer => {
                 for token in Lexer::new(&code) {
                     match token {
                         Ok(token) => println!(" -> {}", token),
-                        Err(err) => println!(" {}", err),
+                        Err(err) => println!("{}", err),
                     }
                 }
             }
-            ReplMode::Parser => {
-                for expr in Parser::new(
-                    Lexer::new(&code)
-                        .map(|t| t.unwrap())
-                        .collect::<Vec<TokenData>>()
-                        .iter(),
-                ) {
-                    match expr {
-                        Ok(expr) => println!("{:?}", expr),
-                        Err(err) => println!("Parser error: {}", err),
+            ReplMode::Parser => match get_parser(&code) {
+                Ok(parser) => {
+                    for stmt in parser {
+                        match stmt {
+                            Ok(stmt) => println!(" : {:?}", stmt),
+                            Err(err) => println!("{}", err),
+                        }
                     }
                 }
-            }
-            _ => {
-                println!("Not implemented yet");
-            }
+                Err(err) => println!("Parser error: {}", err),
+            },
+            ReplMode::Evaluator => match get_evaluator(&code, &mut evaluator) {
+                Ok(value) => println!("{}", value),
+                Err(err) => println!("{}", err),
+            },
         }
     }
 }

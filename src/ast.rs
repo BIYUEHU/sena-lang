@@ -13,6 +13,7 @@ pub enum Expr {
         type_params: Vec<(String, Box<Expr>)>,
         params: Vec<(String, Option<Box<Expr>>)>,
         body: Box<Expr>,
+        return_type: Option<Box<Expr>>,
     },
     If {
         condition: Box<Expr>,
@@ -30,7 +31,7 @@ pub enum Expr {
         body: Box<Expr>,
     },
     Literal(Literal),
-    Block(Vec<Expr>),
+    Block(Vec<Stmt>),
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -70,8 +71,6 @@ pub enum Stmt {
     },
     Expr(Expr),
 }
-
-pub type BlockStmt = Vec<Stmt>;
 
 #[derive(PartialEq, PartialOrd, Debug, Clone)]
 pub enum Precedence {

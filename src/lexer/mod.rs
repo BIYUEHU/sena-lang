@@ -423,8 +423,8 @@ impl Iterator for Lexer<'_> {
 
 #[cfg(test)]
 mod tests {
-    pub use super::Token::*;
-    pub use super::*;
+    use super::Token::*;
+    use super::*;
 
     // 辅助函数：将Lexer的结果转换为Token Vec
     fn lex(input: &str) -> Vec<Token> {
