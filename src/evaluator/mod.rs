@@ -103,7 +103,6 @@ impl Evaluator {
                                 "construct_{}_{}",
                                 name, variant.name
                             ))),
-                            env: self.env.clone(),
                         };
                         constructors.push((variant.name.clone(), (arity, constructor_fn)));
                     }
@@ -249,7 +248,7 @@ impl Evaluator {
                     .map(|arg| self.eval_expr(arg))
                     .collect::<Result<Vec<_>, _>>()?;
                 match func {
-                    Object::Function { params, body, env } => {
+                    Object::Function { params, body } => {
                         if params.len() != args.len() {
                             return Err(EvalError::ArityMismatch);
                         }
@@ -265,10 +264,10 @@ impl Evaluator {
                                 Ok(Object::Unit)
                             }
                             Expr::Ident(name) if name == "get_timestrap_builtin".to_string() => {
-                                Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_secs() as i64))
+                                Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64))
                             }
                             _ => {
-                                let mut local_env = env.clone();
+                                let mut local_env = self.env.clone();
                                 for (param, arg) in params.iter().zip(args) {
                                     local_env.insert_value(param.clone(), arg).map_err(|_| {
                                         EvalError::RedefinedIdentifier(param.clone())
@@ -287,7 +286,6 @@ impl Evaluator {
                 Ok(Object::Function {
                     params: param_names,
                     body: body.clone(),
-                    env: self.env.clone(),
                 })
             }
             Expr::If {

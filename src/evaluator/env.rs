@@ -40,7 +40,7 @@ impl Env {
             Object::Function {
                 params: vec!["x".to_string()],
                 body: Box::new(crate::ast::Expr::Ident("print_builtin".to_string())),
-                env: self.clone(),
+                // env: self.clone(),
             },
         )
         .unwrap();
@@ -49,19 +49,20 @@ impl Env {
             Object::Function {
                 params: vec![],
                 body: Box::new(crate::ast::Expr::Ident("get_timestrap_builtin".to_string())),
-                env: self.clone(),
+                // env: self.clone(),
             },
         )
         .unwrap();
     }
 
     pub fn insert_value(&mut self, name: String, value: Object) -> Result<(), String> {
-        if self.values.contains_key(&name) || self.types.contains_key(&name) {
-            Err(format!("Identifier '{}' is already defined", name))
-        } else {
-            self.values.insert(name, value);
-            Ok(())
-        }
+        // TODO: check if name is valid
+        // if self.values.contains_key(&name) || self.types.contains_key(&name) {
+        //     Err(format!("Identifier '{}' is already defined", name))
+        // } else {
+        self.values.insert(name, value);
+        Ok(())
+        // }
     }
 
     pub fn insert_type(&mut self, name: String, type_obj: TypeObject) -> Result<(), String> {

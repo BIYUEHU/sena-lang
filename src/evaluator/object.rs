@@ -1,8 +1,5 @@
-use std::fmt::{self, Display, Formatter};
-
 use crate::ast::Expr;
-
-use super::env::Env;
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Object {
@@ -15,7 +12,7 @@ pub enum Object {
     Function {
         params: Vec<String>,
         body: Box<Expr>,
-        env: Env,
+        // env: Env,
     },
     Type(TypeObject),
     ADT {

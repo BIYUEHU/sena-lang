@@ -12,4 +12,9 @@ type Maybe = <A> Just(A) | Nothing
 type Result = <A, E> Ok(A) | Err(E)
 export abstract type Option = <A> Some(A) | None
 export type List = <A> Nil | Cons(A, List(A))
+
+let a = (x) => c + 1
+let c = 22
+
 print("Hello, world!")
+print(a(1))
