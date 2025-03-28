@@ -14,6 +14,7 @@ impl PartialEq for Env {
     }
 }
 
+// TODO: improve env to support father env
 impl Env {
     pub fn new() -> Self {
         let mut env = Env {
@@ -42,6 +43,7 @@ impl Env {
                 body: Box::new(crate::ast::Expr::Ident("print_builtin".to_string())),
                 // env: self.clone(),
             },
+            true,
         )
         .unwrap();
         self.insert_value(
@@ -51,21 +53,25 @@ impl Env {
                 body: Box::new(crate::ast::Expr::Ident("get_timestrap_builtin".to_string())),
                 // env: self.clone(),
             },
+            true,
         )
         .unwrap();
     }
 
-    pub fn insert_value(&mut self, name: String, value: Object) -> Result<(), String> {
-        // TODO: check if name is valid
-        // if self.values.contains_key(&name) || self.types.contains_key(&name) {
-        //     Err(format!("Identifier '{}' is already defined", name))
-        // } else {
-        self.values.insert(name, value);
-        Ok(())
-        // }
+    pub fn insert_value(&mut self, name: String, value: Object, force: bool) -> Result<(), String> {
+        if !force && (self.values.contains_key(&name) || self.types.contains_key(&name)) {
+            Err(format!("Identifier '{}' is already defined", name))
+        } else {
+            self.values.insert(name, value);
+            Ok(())
+        }
     }
 
-    pub fn insert_type(&mut self, name: String, type_obj: TypeObject) -> Result<(), String> {
+    pub fn insert_type(
+        &mut self,
+        name: String,
+        type_obj: TypeObject, /* , force: bool */
+    ) -> Result<(), String> {
         if self.types.contains_key(&name) || self.values.contains_key(&name) {
             Err(format!("Identifier '{}' is already defined", name))
         } else {

@@ -67,7 +67,7 @@ impl Evaluator {
                 }
                 let val = self.eval_expr(value)?;
                 self.env
-                    .insert_value(name.clone(), val)
+                    .insert_value(name.clone(), val, false)
                     .map_err(|_| EvalError::RedefinedIdentifier(name.clone()))?;
                 Ok(Object::Unit)
             }
@@ -123,7 +123,7 @@ impl Evaluator {
                     for (ctor_name, (_arity, ctor_fn)) in constructors {
                         let full_name = format!("{}::{}", type_name, ctor_name);
                         self.env
-                            .insert_value(full_name, ctor_fn.clone())
+                            .insert_value(full_name, ctor_fn.clone(), false)
                             .map_err(|_| EvalError::RedefinedIdentifier(ctor_name.clone()))?;
                     }
                 }
@@ -269,9 +269,9 @@ impl Evaluator {
                             _ => {
                                 let mut local_env = self.env.clone();
                                 for (param, arg) in params.iter().zip(args) {
-                                    local_env.insert_value(param.clone(), arg).map_err(|_| {
-                                        EvalError::RedefinedIdentifier(param.clone())
-                                    })?;
+                                    local_env.insert_value(param.clone(), arg, true).map_err(
+                                        |_| EvalError::RedefinedIdentifier(param.clone()),
+                                    )?;
                                 }
                                 Evaluator { env: local_env }.eval_expr(&body)
                             }
@@ -306,7 +306,7 @@ impl Evaluator {
                 let val = self.eval_expr(value)?;
                 let mut local_env = self.env.clone();
                 local_env
-                    .insert_value(name.clone(), val)
+                    .insert_value(name.clone(), val, false)
                     .map_err(|_| EvalError::RedefinedIdentifier(name.clone()))?;
                 Evaluator { env: local_env }.eval_expr(body)
             }

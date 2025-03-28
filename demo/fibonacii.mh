@@ -1,6 +1,7 @@
+let n = 122
 let fibonaci: Int -> Int = (n) =>
   if n < 2 then 1 else fibonaci(n - 1) + fibonaci(n - 2)
 
 let start = get_timestrap()
-print(fibonaci(26))
+print(fibonaci(12))
 print(get_timestrap() - start)
