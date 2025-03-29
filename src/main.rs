@@ -1,9 +1,9 @@
-use parser::ast::Stmt;
-use parser::evaluator::env::Env;
-use parser::evaluator::object::Object;
-use parser::evaluator::Evaluator;
-use parser::lexer::Lexer;
-use parser::parser::Parser;
+use mihama::ast::Stmt;
+use mihama::evaluator::env::Env;
+use mihama::evaluator::object::Object;
+use mihama::evaluator::Evaluator;
+use mihama::lexer::Lexer;
+use mihama::parser::Parser;
 use std::io::Write;
 
 const PROMPT: &str = ">> ";
