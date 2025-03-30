@@ -1,34 +1,29 @@
-use super::object::{Object, TypeObject};
-use std::cell::RefCell;
+use super::{
+    object::{Object, TypeObject},
+    EvalError,
+};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 #[derive(Debug, Clone)]
-pub struct Env {
-    pub parent: Option<Rc<RefCell<Env>>>,
+pub struct Env<'a> {
+    pub parent: Option<&'a Env<'a>>,
     pub values: HashMap<String, Object>,
     pub types: HashMap<String, TypeObject>,
 }
 
-impl PartialEq for Env {
+impl PartialEq for Env<'_> {
     fn eq(&self, _: &Self) -> bool {
         false
     }
 }
 
-// TODO: 实现 Env 的相关方法
-
-impl Env {
-    pub fn new() -> Self /* Rc<RefCell<Self>> */ {
+impl<'a> Env<'a> {
+    pub fn new() -> Self {
         let mut env = Env {
             parent: None,
             values: HashMap::new(),
             types: HashMap::new(),
         };
-        // let rc_env = Rc::new(RefCell::new(env));
-        // 初始化全局环境（内置类型、函数等）
-        // rc_env.borrow_mut().init();
-        // rc_env
         env.init();
         env
     }
@@ -51,7 +46,6 @@ impl Env {
                 params: vec!["x".to_string()],
                 body: Box::new(crate::ast::Expr::Ident("print_builtin".to_string())),
             },
-            true,
         )
         .unwrap();
         self.insert_value(
@@ -60,24 +54,26 @@ impl Env {
                 params: vec![],
                 body: Box::new(crate::ast::Expr::Ident("get_timestrap_builtin".to_string())),
             },
-            true,
         )
         .unwrap();
     }
 
     /// 创建一个扩展环境，其 parent 指向当前环境
-    pub fn extend(parent: Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
-        Rc::new(RefCell::new(Env {
+    pub fn extend(parent: &'a Env<'a>) -> Env<'a> {
+        Env {
             parent: Some(parent),
             values: HashMap::new(),
             types: HashMap::new(),
-        }))
+        }
     }
 
     /// 插入变量时先检查当前环境，不检查父环境（查找时会递归）
-    pub fn insert_value(&mut self, name: String, value: Object, force: bool) -> Result<(), String> {
-        if !force && (self.values.contains_key(&name) || self.types.contains_key(&name)) {
-            Err(format!("Identifier '{}' is already defined", name))
+    pub fn insert_value(&mut self, name: String, value: Object) -> Result<(), EvalError> {
+        if self.values.contains_key(&name) || self.types.contains_key(&name) {
+            Err(EvalError::RedefinedIdentifier(format!(
+                "Identifier '{}' is already defined",
+                name
+            )))
         } else {
             self.values.insert(name, value);
             Ok(())
@@ -85,9 +81,12 @@ impl Env {
     }
 
     /// 插入类型时先检查当前环境
-    pub fn insert_type(&mut self, name: String, type_obj: TypeObject) -> Result<(), String> {
+    pub fn insert_type(&mut self, name: String, type_obj: TypeObject) -> Result<(), EvalError> {
         if self.types.contains_key(&name) || self.values.contains_key(&name) {
-            Err(format!("Identifier '{}' is already defined", name))
+            Err(EvalError::RedefinedIdentifier(format!(
+                "Identifier '{}' is already defined",
+                name
+            )))
         } else {
             self.types.insert(name, type_obj);
             Ok(())
@@ -99,7 +98,7 @@ impl Env {
         if let Some(val) = self.values.get(name) {
             Some(val.clone())
         } else if let Some(ref parent) = self.parent {
-            parent.borrow().get_value(name)
+            parent.get_value(name)
         } else {
             None
         }
@@ -110,7 +109,7 @@ impl Env {
         if let Some(typ) = self.types.get(name) {
             Some(typ.clone())
         } else if let Some(ref parent) = self.parent {
-            parent.borrow().get_type(name)
+            parent.get_type(name)
         } else {
             None
         }

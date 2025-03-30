@@ -67,8 +67,8 @@ fn main() {
 
     let mut input = String::new();
     let mut mode = ReplMode::Evaluator;
-
-    let mut evaluator = Evaluator::new(Env::new());
+    let mut env = Env::new();
+    let mut evaluator = Evaluator::new(&mut env);
 
     loop {
         print!("{}", PROMPT);
@@ -107,13 +107,15 @@ fn main() {
         }
 
         if input.starts_with(".clear") {
-            evaluator = Evaluator::new(Env::new());
+            env = Env::new();
+            evaluator = Evaluator::new(&mut env);
             continue;
         }
 
         let code = if input.starts_with(".read") {
             if input.starts_with(".readc") {
-                evaluator = Evaluator::new(Env::new());
+                env = Env::new();
+                evaluator = Evaluator::new(&mut env);
             }
             match std::fs::read_to_string(input.split_whitespace().last().unwrap()) {
                 Ok(code) => code,

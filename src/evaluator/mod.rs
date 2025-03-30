@@ -1,6 +1,3 @@
-pub mod env;
-pub mod object;
-
 use env::Env;
 use object::{Object, TypeObject};
 
@@ -8,6 +5,9 @@ use crate::ast::{Expr, Literal, Program, Stmt};
 use crate::token::Token;
 use std::fmt::{self, Display, Formatter};
 use std::time::UNIX_EPOCH;
+
+pub mod env;
+pub mod object;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
@@ -34,12 +34,12 @@ impl Display for EvalError {
     }
 }
 
-pub struct Evaluator {
-    env: Env,
+pub struct Evaluator<'a> {
+    env: &'a mut Env<'a>,
 }
 
-impl Evaluator {
-    pub fn new(env: Env) -> Self {
+impl<'a> Evaluator<'a> {
+    pub fn new(env: &'a mut Env<'a>) -> Self {
         Evaluator { env }
     }
 
@@ -51,8 +51,9 @@ impl Evaluator {
         Ok(last_value)
     }
 
-    pub fn get_env(&self) -> &Env {
-        &self.env
+    /// 返回当前环境的副本
+    pub fn get_env(&self) -> Env<'_> {
+        self.env.clone()
     }
 
     fn eval_stmt(&mut self, stmt: &Stmt) -> Result<Object, EvalError> {
@@ -65,9 +66,9 @@ impl Evaluator {
                 if self.env.get_value(name).is_some() || self.env.get_type(name).is_some() {
                     return Err(EvalError::RedefinedIdentifier(name.clone()));
                 }
-                let val = self.eval_expr(value)?;
+                let result = self.eval_expr_tco(value, false)?;
                 self.env
-                    .insert_value(name.clone(), val, false)
+                    .insert_value(name.clone(), result)
                     .map_err(|_| EvalError::RedefinedIdentifier(name.clone()))?;
                 Ok(Object::Unit)
             }
@@ -80,9 +81,9 @@ impl Evaluator {
                 if self.env.get_type(name).is_some() || self.env.get_value(name).is_some() {
                     return Err(EvalError::RedefinedIdentifier(name.clone()));
                 }
-                // 简单实现：若有类型注解则期望其返回一个类型，否则生成自定义类型
+                // 若有类型注解，则期望其返回一个类型，否则生成自定义类型
                 let type_obj = if let Some(expr) = type_annotation {
-                    match self.eval_expr(expr)? {
+                    match self.eval_expr_tco(expr, false)? {
                         Object::Type(t) => t,
                         _ => return Err(EvalError::TypeMismatch),
                     }
@@ -90,13 +91,11 @@ impl Evaluator {
                     // 构造自定义类型对象，并在其中登记各变体对应的构造函数
                     let mut constructors = Vec::new();
                     for variant in variants {
-                        // 每个构造子函数参数数目由 variant.fields 决定
                         let arity = match &variant.fields {
                             crate::ast::TypeVariantFields::Tuple(exprs) => exprs.len(),
                             crate::ast::TypeVariantFields::Record(fields) => fields.len(),
                             crate::ast::TypeVariantFields::Unit => 0,
                         };
-                        // 构造函数对象，此处使用闭包形式的包装实现（为了简单，此处未实现真正的闭包执行）
                         let constructor_fn = Object::Function {
                             params: (0..arity).map(|i| format!("arg{}", i)).collect(),
                             body: Box::new(Expr::Ident(format!(
@@ -123,25 +122,26 @@ impl Evaluator {
                     for (ctor_name, (_arity, ctor_fn)) in constructors {
                         let full_name = format!("{}::{}", type_name, ctor_name);
                         self.env
-                            .insert_value(full_name, ctor_fn.clone(), false)
+                            .insert_value(full_name, ctor_fn.clone())
                             .map_err(|_| EvalError::RedefinedIdentifier(ctor_name.clone()))?;
                     }
                 }
                 Ok(Object::Unit)
             }
-            Stmt::Expr(expr) => self.eval_expr(expr),
+            Stmt::Expr(expr) => self.eval_expr_tco(expr, false),
             // 对于 Import/Export 这里简单忽略
             _ => Ok(Object::Unit),
         }
     }
 
-    fn eval_expr(&self, expr: &Expr) -> Result<Object, EvalError> {
+    /// eval_expr_tco(expr, tail) 求值表达式 expr，其中 tail 表示是否处于尾调用位置
+    fn eval_expr_tco(&mut self, expr: &Expr, tail: bool) -> Result<Object, EvalError> {
         match expr {
             Expr::Ident(name) => {
                 if let Some(val) = self.env.get_value(name) {
-                    Ok(val.clone())
+                    Ok(val)
                 } else if let Some(type_obj) = self.env.get_type(name) {
-                    Ok(Object::Type(type_obj.clone()))
+                    Ok(Object::Type(type_obj))
                 } else {
                     Err(EvalError::UndefinedVariable(name.clone()))
                 }
@@ -155,13 +155,13 @@ impl Evaluator {
                 Literal::Array(arr) => {
                     let values = arr
                         .iter()
-                        .map(|e| self.eval_expr(e))
+                        .map(|e| self.eval_expr_tco(e, false))
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Object::Array(values))
                 }
             },
-            Expr::Prefix(op, expr) => {
-                let val = self.eval_expr(expr)?;
+            Expr::Prefix(op, sub_expr) => {
+                let val = self.eval_expr_tco(sub_expr, false)?;
                 match op {
                     Token::Sub => match val {
                         Object::Int(i) => Ok(Object::Int(-i)),
@@ -176,8 +176,8 @@ impl Evaluator {
                 }
             }
             Expr::Infix(op, left, right) => {
-                let left_val = self.eval_expr(left)?;
-                let right_val = self.eval_expr(right)?;
+                let left_val = self.eval_expr_tco(left, false)?;
+                let right_val = self.eval_expr_tco(right, false)?;
                 match op {
                     Token::Plus => match (left_val, right_val) {
                         (Object::Int(l), Object::Int(r)) => Ok(Object::Int(l + r)),
@@ -228,7 +228,6 @@ impl Evaluator {
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::ThinArrow => {
-                        // 构造函数类型运算符：左侧与右侧均须为类型
                         if let (Object::Type(param), Object::Type(ret)) = (left_val, right_val) {
                             Ok(Object::Type(TypeObject::FunctionType(
                                 Box::new(param),
@@ -242,44 +241,12 @@ impl Evaluator {
                 }
             }
             Expr::Call { callee, arguments } => {
-                let func = self.eval_expr(callee)?;
+                let func = self.eval_expr_tco(callee, false)?;
                 let args = arguments
                     .iter()
-                    .map(|arg| self.eval_expr(arg))
+                    .map(|arg| self.eval_expr_tco(arg, false))
                     .collect::<Result<Vec<_>, _>>()?;
-                match func {
-                    Object::Function { params, body } => {
-                        if params.len() != args.len() {
-                            return Err(EvalError::ArityMismatch);
-                        }
-                        match body.as_ref().clone() {
-                            Expr::Ident(name) if name == "print_builtin".to_string() => {
-                                println!(
-                                    "{}",
-                                    args.iter()
-                                        .map(|arg| arg.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(" ")
-                                );
-                                Ok(Object::Unit)
-                            }
-                            Expr::Ident(name) if name == "get_timestrap_builtin".to_string() => {
-                                Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64))
-                            }
-                            _ => {
-                                let mut local_env = self.env.clone();
-                                for (param, arg) in params.iter().zip(args) {
-                                    local_env.insert_value(param.clone(), arg, true).map_err(
-                                        |_| EvalError::RedefinedIdentifier(param.clone()),
-                                    )?;
-                                }
-                                Evaluator { env: local_env }.eval_expr(&body)
-                            }
-                        }
-                    }
-                    Object::ADT { .. } => Err(EvalError::NotCallable),
-                    _ => Err(EvalError::NotCallable),
-                }
+                self.eval_function_call_tco(func, args, tail)
             }
             Expr::Lambda { params, body, .. } => {
                 let param_names = params.iter().map(|(name, _)| name.clone()).collect();
@@ -293,36 +260,103 @@ impl Evaluator {
                 then_branch,
                 else_branch,
             } => {
-                let cond_val = self.eval_expr(condition)?;
+                let cond_val = self.eval_expr_tco(condition, false)?;
                 match cond_val {
-                    Object::Bool(true) => self.eval_expr(then_branch),
-                    Object::Bool(false) => self.eval_expr(else_branch),
+                    Object::Bool(true) => self.eval_expr_tco(then_branch, tail),
+                    Object::Bool(false) => self.eval_expr_tco(else_branch, tail),
                     _ => Err(EvalError::TypeMismatch),
                 }
             }
             Expr::LetIn {
                 name, value, body, ..
             } => {
-                let val = self.eval_expr(value)?;
-                let mut local_env = self.env.clone();
-                local_env
-                    .insert_value(name.clone(), val, false)
-                    .map_err(|_| EvalError::RedefinedIdentifier(name.clone()))?;
-                Evaluator { env: local_env }.eval_expr(body)
+                let val = self.eval_expr_tco(value, false)?;
+                let mut new_env = Env::extend(self.env);
+                new_env.insert_value(name.clone(), val)?;
+                Evaluator::new(&mut new_env).eval_expr_tco(body, tail)
             }
             Expr::Block(stmts) => {
-                let mut local_env = self.env.clone();
+                let mut new_env = Env::extend(self.env);
                 let mut last_value = Object::Unit;
+                let mut evaluator = Evaluator::new(&mut new_env);
                 for stmt in stmts {
-                    last_value = Evaluator {
-                        env: local_env.clone(),
-                    }
-                    .eval_stmt(stmt)?;
-                    local_env = Evaluator { env: local_env }.env;
+                    last_value = evaluator.eval_stmt(stmt)?;
                 }
                 Ok(last_value)
             }
             Expr::Match { expr: _, cases: _ } => Ok(Object::Unit),
+        }
+    }
+
+    fn eval_function_call_tco(
+        &mut self,
+        mut func: Object,
+        mut args: Vec<Object>,
+        tail: bool,
+    ) -> Result<Object, EvalError> {
+        if tail {
+            loop {
+                match func {
+                    Object::Function { params, body } => {
+                        if params.len() != args.len() {
+                            return Err(EvalError::ArityMismatch);
+                        }
+                        println!("{:?}", body);
+                        let mut local_env = Env::extend(self.env);
+                        for (p, a) in params.iter().zip(args.iter()) {
+                            local_env.insert_value(p.clone(), a.clone())?;
+                        }
+                        // 在求值函数体时，我们令其处于尾调用位置
+                        let result = Evaluator::new(&mut local_env).eval_expr_tco(&body, true)?;
+                        // 如果 result 是一个尾调用调用（此处我们约定，如果返回的函数调用处于尾调用位置，则它会以 Function 类型返回），
+                        // 则继续循环展开；否则直接返回结果。
+                        match result {
+                            // 如果返回的是 Function，则继续循环展开
+                            Object::Function { .. } => {
+                                func = result;
+                                // 此处为简单起见，不重新计算 args；实际可根据需要调整
+                                args = Vec::new();
+                                continue;
+                            }
+                            _ => return Ok(result),
+                        }
+                    }
+                    // Object::ADT { .. } => Err(EvalError::NotCallable),
+                    _ => return Err(EvalError::NotCallable),
+                }
+            }
+        } else {
+            // 非尾调用直接处理
+            match func {
+                Object::Function { params, body } => {
+                    if params.len() != args.len() {
+                        return Err(EvalError::ArityMismatch);
+                    }
+                    match *body {
+                        Expr::Ident(ref name) if name == "print_builtin" => {
+                            println!(
+                                "{}",
+                                args.iter()
+                                    .map(|arg| arg.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            );
+                            Ok(Object::Unit)
+                        }
+                        Expr::Ident(ref name) if name == "get_timestrap_builtin" => {
+                            Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64))
+                        }
+                        _ => {
+                            let mut local_env = Env::extend(self.env);
+                            for (p, a) in params.iter().zip(args.into_iter()) {
+                                local_env.insert_value(p.clone(), a)?;
+                            }
+                            Evaluator::new(&mut local_env).eval_expr_tco(&body, false)
+                        }
+                    }
+                }
+                _ => Err(EvalError::NotCallable),
+            }
         }
     }
 }
