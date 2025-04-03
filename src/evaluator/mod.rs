@@ -1,8 +1,8 @@
-use env::Env;
-use object::{Object, TypeObject};
-
-use crate::ast::{Expr, Literal, Program, Stmt};
+use crate::ast::{Expr, Literal, Pattern, Program, Stmt, TypeExpr, TypeVariantFields};
 use crate::token::Token;
+use crate::utils::is_uppercase_first_letter;
+use env::{Env, EvaluatorEnv};
+use object::{Object, PrettyPrint, TypeObject};
 use std::fmt::{self, Display, Formatter};
 use std::time::UNIX_EPOCH;
 
@@ -17,6 +17,7 @@ pub enum EvalError {
     ArityMismatch,
     NotCallable,
     RedefinedIdentifier(String),
+    PatternMatchFailure,
 }
 
 impl Display for EvalError {
@@ -30,16 +31,17 @@ impl Display for EvalError {
             EvalError::RedefinedIdentifier(name) => {
                 write!(f, "Identifier '{}' is already defined", name)
             }
+            EvalError::PatternMatchFailure => write!(f, "Pattern match failed"),
         }
     }
 }
 
 pub struct Evaluator<'a> {
-    env: &'a mut Env<'a>,
+    env: &'a mut EvaluatorEnv<'a>,
 }
 
 impl<'a> Evaluator<'a> {
-    pub fn new(env: &'a mut Env<'a>) -> Self {
+    pub fn new(env: &'a mut EvaluatorEnv<'a>) -> Self {
         Evaluator { env }
     }
 
@@ -51,9 +53,53 @@ impl<'a> Evaluator<'a> {
         Ok(last_value)
     }
 
-    /// 返回当前环境的副本
-    pub fn get_env(&self) -> Env<'_> {
-        self.env.clone()
+    fn eval_internal_func(
+        &mut self,
+        identify: &str,
+        args: Vec<Object>,
+    ) -> Result<Object, EvalError> {
+        match identify {
+            "print" => {
+                println!(
+                    "{}",
+                    args.iter()
+                        .map(|arg| arg.pretty_print())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                Ok(Object::Unit)
+            }
+            "get_timestrap" => Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64)),
+            name if name.starts_with("type_constructor_") => {
+                let name = &name["type_constructor_".len()..];
+                // Type constructor application
+                if let Some(Object::Type(TypeObject::ADT {
+                    name,
+                    type_params,
+                    constructors,
+                })) = self.env.get_bind(&name)
+                {
+                    if type_params.len() != args.len() {
+                        return Err(EvalError::ArityMismatch);
+                    }
+                    let applied_types = args
+                        .into_iter()
+                        .map(|arg| match arg {
+                            Object::Type(t) => Ok(t),
+                            _ => Err(EvalError::TypeMismatch),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Object::Type(TypeObject::ADT {
+                        name: name.clone(),
+                        type_params: vec![], // Fully applied
+                        constructors: constructors.clone(),
+                    }))
+                } else {
+                    Err(EvalError::UndefinedVariable(name.to_string()))
+                }
+            }
+            _ => Err(EvalError::UndefinedVariable(identify.to_string())),
+        }
     }
 
     fn eval_stmt(&mut self, stmt: &Stmt) -> Result<Object, EvalError> {
@@ -63,85 +109,119 @@ impl<'a> Evaluator<'a> {
                 type_annotation: _,
                 value,
             } => {
-                if self.env.get_value(name).is_some() || self.env.get_type(name).is_some() {
+                if self.env.get_bind(name).is_some() {
                     return Err(EvalError::RedefinedIdentifier(name.clone()));
                 }
-                let result = self.eval_expr_tco(value, false)?;
-                self.env
-                    .insert_value(name.clone(), result)
-                    .map_err(|_| EvalError::RedefinedIdentifier(name.clone()))?;
+                let result = self.eval_expr(value)?;
+                self.env.insert_bind(name.clone(), result)?;
                 Ok(Object::Unit)
             }
             Stmt::Type {
                 name,
-                type_annotation,
-                type_params: _,
+                type_annotation: _,
+                type_params,
                 variants,
             } => {
-                if self.env.get_type(name).is_some() || self.env.get_value(name).is_some() {
-                    return Err(EvalError::RedefinedIdentifier(name.clone()));
+                // Collect constructor definitions
+                let constructors: Vec<(String, Vec<TypeExpr>)> = variants
+                    .iter()
+                    .map(|variant| {
+                        let field_types = match &variant.fields {
+                            TypeVariantFields::Unit => vec![],
+                            TypeVariantFields::Tuple(types) => {
+                                types.iter().map(|t| *t.clone()).collect()
+                            }
+                            TypeVariantFields::Record(fields) => {
+                                fields.iter().map(|(_, t)| *t.clone()).collect()
+                            }
+                        };
+                        (variant.name.clone(), field_types)
+                    })
+                    .collect();
+
+                // Handle type constructor
+                match type_params {
+                    None => {
+                        // No type parameters: Add type constructor as a TypeObject
+                        let type_obj = TypeObject::ADT {
+                            name: name.clone(),
+                            type_params: vec![],
+                            constructors: constructors.clone(),
+                        };
+                        self.env.insert_bind(name.clone(), Object::Type(type_obj))?;
+                    }
+                    Some(params) => {
+                        // With type parameters: Add type constructor as a function
+                        let type_constructor = Object::Function {
+                            type_params: vec![],
+                            params: params
+                                .clone()
+                                .into_iter()
+                                .map(|t| (t, Box::new(TypeObject::Kind.into())))
+                                .collect::<Vec<_>>(),
+                            body: Box::new(Expr::Ident(format!("type_constructor_{}", name))), // Placeholder, handled specially in eval_expr
+                            return_type: Box::new({
+                                let mut return_type: TypeExpr = TypeObject::Kind.into();
+                                for _ in params {
+                                    return_type = TypeExpr::Arrow(
+                                        Box::new(return_type.clone()),
+                                        Box::new(TypeObject::Kind.into()),
+                                    );
+                                }
+                                return_type
+                            }),
+                        };
+                        self.env.insert_bind(name.clone(), type_constructor)?;
+                    }
                 }
-                // 若有类型注解，则期望其返回一个类型，否则生成自定义类型
-                let type_obj = if let Some(expr) = type_annotation {
-                    match self.eval_expr_tco(expr, false)? {
-                        Object::Type(t) => t,
-                        _ => return Err(EvalError::TypeMismatch),
-                    }
-                } else {
-                    // 构造自定义类型对象，并在其中登记各变体对应的构造函数
-                    let mut constructors = Vec::new();
-                    for variant in variants {
-                        let arity = match &variant.fields {
-                            crate::ast::TypeVariantFields::Tuple(exprs) => exprs.len(),
-                            crate::ast::TypeVariantFields::Record(fields) => fields.len(),
-                            crate::ast::TypeVariantFields::Unit => 0,
-                        };
-                        let constructor_fn = Object::Function {
-                            params: (0..arity).map(|i| format!("arg{}", i)).collect(),
-                            body: Box::new(Expr::Ident(format!(
-                                "construct_{}_{}",
-                                name, variant.name
-                            ))),
-                        };
-                        constructors.push((variant.name.clone(), (arity, constructor_fn)));
-                    }
-                    TypeObject::CustomType {
-                        name: name.clone(),
-                        constructors,
-                    }
-                };
-                self.env
-                    .insert_type(name.clone(), type_obj.clone())
-                    .map_err(|_| EvalError::RedefinedIdentifier(name.clone()))?;
-                // 同时将类型的每个构造子函数注入到环境中
-                if let TypeObject::CustomType {
-                    name: type_name,
-                    constructors,
-                } = &type_obj
-                {
-                    for (ctor_name, (_arity, ctor_fn)) in constructors {
-                        let full_name = format!("{}::{}", type_name, ctor_name);
-                        self.env
-                            .insert_value(full_name, ctor_fn.clone())
-                            .map_err(|_| EvalError::RedefinedIdentifier(ctor_name.clone()))?;
+
+                // Handle value constructors
+                for variant in variants {
+                    let variant_name = variant.name.clone();
+                    match &variant.fields {
+                        TypeVariantFields::Unit => {
+                            // No value parameters: Direct ADT value
+                            let adt_value = Object::ADT {
+                                type_name: name.clone(),
+                                variant: variant_name.clone(),
+                                fields: vec![],
+                            };
+                            self.env.insert_bind(variant_name.clone(), adt_value)?;
+                        }
+                        TypeVariantFields::Tuple(field_types) => {
+                            // With value parameters: ADT constructor function
+                            let param_count = field_types.len();
+                            let constructor = Object::ADTConstructor {
+                                type_name: name.clone(),
+                                variant: variant_name.clone(),
+                                param_count,
+                            };
+                            self.env.insert_bind(variant_name.clone(), constructor)?;
+                        }
+                        TypeVariantFields::Record(fields) => {
+                            // Record fields treated similarly to tuples
+                            let param_count = fields.len();
+                            let constructor = Object::ADTConstructor {
+                                type_name: name.clone(),
+                                variant: variant_name.clone(),
+                                param_count,
+                            };
+                            self.env.insert_bind(variant_name.clone(), constructor)?;
+                        }
                     }
                 }
                 Ok(Object::Unit)
             }
-            Stmt::Expr(expr) => self.eval_expr_tco(expr, false),
-            // 对于 Import/Export 这里简单忽略
-            _ => Ok(Object::Unit),
+            Stmt::Expr(expr) => self.eval_expr(expr),
+            _ => Ok(Object::Unit), // Import/Export ignored
         }
     }
 
-    /// eval_expr_tco(expr, tail) 求值表达式 expr，其中 tail 表示是否处于尾调用位置
-    fn eval_expr_tco(&mut self, expr: &Expr, tail: bool) -> Result<Object, EvalError> {
+    fn eval_expr(&mut self, expr: &Expr) -> Result<Object, EvalError> {
         match expr {
             Expr::Ident(name) => {
-                if let Some(val) = self.env.get_value(name) {
+                if let Some(val) = self.env.get_bind(name) {
                     Ok(val)
-                } else if let Some(type_obj) = self.env.get_type(name) {
-                    Ok(Object::Type(type_obj))
                 } else {
                     Err(EvalError::UndefinedVariable(name.clone()))
                 }
@@ -155,13 +235,13 @@ impl<'a> Evaluator<'a> {
                 Literal::Array(arr) => {
                     let values = arr
                         .iter()
-                        .map(|e| self.eval_expr_tco(e, false))
+                        .map(|e| self.eval_expr(e))
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Object::Array(values))
                 }
             },
             Expr::Prefix(op, sub_expr) => {
-                let val = self.eval_expr_tco(sub_expr, false)?;
+                let val = self.eval_expr(sub_expr)?;
                 match op {
                     Token::Sub => match val {
                         Object::Int(i) => Ok(Object::Int(-i)),
@@ -176,8 +256,8 @@ impl<'a> Evaluator<'a> {
                 }
             }
             Expr::Infix(op, left, right) => {
-                let left_val = self.eval_expr_tco(left, false)?;
-                let right_val = self.eval_expr_tco(right, false)?;
+                let left_val = self.eval_expr(left)?;
+                let right_val = self.eval_expr(right)?;
                 match op {
                     Token::Plus => match (left_val, right_val) {
                         (Object::Int(l), Object::Int(r)) => Ok(Object::Int(l + r)),
@@ -229,7 +309,7 @@ impl<'a> Evaluator<'a> {
                     },
                     Token::ThinArrow => {
                         if let (Object::Type(param), Object::Type(ret)) = (left_val, right_val) {
-                            Ok(Object::Type(TypeObject::FunctionType(
+                            Ok(Object::Type(TypeObject::Function(
                                 Box::new(param),
                                 Box::new(ret),
                             )))
@@ -241,122 +321,158 @@ impl<'a> Evaluator<'a> {
                 }
             }
             Expr::Call { callee, arguments } => {
-                let func = self.eval_expr_tco(callee, false)?;
+                let func = self.eval_expr(callee)?;
                 let args = arguments
                     .iter()
-                    .map(|arg| self.eval_expr_tco(arg, false))
+                    .map(|arg| self.eval_expr(arg))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.eval_function_call_tco(func, args, tail)
+                match func {
+                    Object::Function { params, body, .. } => {
+                        let check_params = || {
+                            if params.len() != args.len() {
+                                Err(EvalError::ArityMismatch)
+                            } else {
+                                Ok(())
+                            }
+                        };
+                        match *body {
+                            Expr::Ident(ref name) => {
+                                // TODO
+                                // if !name.ends_with("!") {
+                                //     check_params()?;
+                                // }
+                                self.eval_internal_func(name.as_str(), args)
+                            }
+                            _ => {
+                                check_params()?;
+                                let mut local_env = Env::extend(self.env);
+                                for (p, a) in params.iter().zip(args.into_iter()) {
+                                    local_env.insert_bind(p.0.clone(), a)?;
+                                }
+                                Evaluator::new(&mut local_env).eval_expr(&body)
+                            }
+                        }
+                    }
+                    Object::ADTConstructor {
+                        type_name,
+                        variant,
+                        param_count,
+                    } => {
+                        if args.len() != param_count {
+                            return Err(EvalError::ArityMismatch);
+                        }
+                        Ok(Object::ADT {
+                            type_name,
+                            variant,
+                            fields: args,
+                        })
+                    }
+                    _ => Err(EvalError::NotCallable),
+                }
             }
-            Expr::Lambda { params, body, .. } => {
-                let param_names = params.iter().map(|(name, _)| name.clone()).collect();
-                Ok(Object::Function {
-                    params: param_names,
-                    body: body.clone(),
-                })
-            }
+            Expr::Function {
+                params,
+                body,
+                type_params,
+                return_type,
+            } => Ok(Object::Function {
+                type_params: type_params.clone(),
+                return_type: return_type.clone(),
+                params: params.clone(),
+                body: body.clone(),
+            }),
             Expr::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                let cond_val = self.eval_expr_tco(condition, false)?;
+                let cond_val = self.eval_expr(condition)?;
                 match cond_val {
-                    Object::Bool(true) => self.eval_expr_tco(then_branch, tail),
-                    Object::Bool(false) => self.eval_expr_tco(else_branch, tail),
+                    Object::Bool(true) => self.eval_expr(then_branch),
+                    Object::Bool(false) => self.eval_expr(else_branch),
                     _ => Err(EvalError::TypeMismatch),
                 }
             }
             Expr::LetIn {
                 name, value, body, ..
             } => {
-                let val = self.eval_expr_tco(value, false)?;
-                let mut new_env = Env::extend(self.env);
-                new_env.insert_value(name.clone(), val)?;
-                Evaluator::new(&mut new_env).eval_expr_tco(body, tail)
+                let val = self.eval_expr(value)?;
+                let mut create_env = Env::extend(self.env);
+                create_env.insert_bind(name.clone(), val)?;
+                Evaluator::new(&mut create_env).eval_expr(body)
             }
             Expr::Block(stmts) => {
-                let mut new_env = Env::extend(self.env);
+                let mut create_env = Env::extend(self.env);
                 let mut last_value = Object::Unit;
-                let mut evaluator = Evaluator::new(&mut new_env);
+                let mut evaluator = Evaluator::new(&mut create_env);
                 for stmt in stmts {
                     last_value = evaluator.eval_stmt(stmt)?;
                 }
                 Ok(last_value)
             }
-            Expr::Match { expr: _, cases: _ } => Ok(Object::Unit),
+            Expr::Match { expr, cases } => {
+                let match_value = self.eval_expr(expr)?;
+                for case in cases {
+                    if let Some(binds) = self.match_pattern(&case.pattern, &match_value) {
+                        let mut case_env = Env::extend(self.env);
+                        for (name, value) in binds {
+                            case_env.insert_bind(name, value)?;
+                        }
+                        let mut case_evaluator = Evaluator::new(&mut case_env);
+                        return case_evaluator.eval_expr(&case.body);
+                    }
+                }
+                Err(EvalError::PatternMatchFailure)
+            }
         }
     }
 
-    fn eval_function_call_tco(
-        &mut self,
-        mut func: Object,
-        mut args: Vec<Object>,
-        tail: bool,
-    ) -> Result<Object, EvalError> {
-        if tail {
-            loop {
-                match func {
-                    Object::Function { params, body } => {
-                        if params.len() != args.len() {
-                            return Err(EvalError::ArityMismatch);
-                        }
-                        println!("{:?}", body);
-                        let mut local_env = Env::extend(self.env);
-                        for (p, a) in params.iter().zip(args.iter()) {
-                            local_env.insert_value(p.clone(), a.clone())?;
-                        }
-                        // 在求值函数体时，我们令其处于尾调用位置
-                        let result = Evaluator::new(&mut local_env).eval_expr_tco(&body, true)?;
-                        // 如果 result 是一个尾调用调用（此处我们约定，如果返回的函数调用处于尾调用位置，则它会以 Function 类型返回），
-                        // 则继续循环展开；否则直接返回结果。
-                        match result {
-                            // 如果返回的是 Function，则继续循环展开
-                            Object::Function { .. } => {
-                                func = result;
-                                // 此处为简单起见，不重新计算 args；实际可根据需要调整
-                                args = Vec::new();
-                                continue;
-                            }
-                            _ => return Ok(result),
-                        }
-                    }
-                    // Object::ADT { .. } => Err(EvalError::NotCallable),
-                    _ => return Err(EvalError::NotCallable),
-                }
-            }
-        } else {
-            // 非尾调用直接处理
-            match func {
-                Object::Function { params, body } => {
-                    if params.len() != args.len() {
-                        return Err(EvalError::ArityMismatch);
-                    }
-                    match *body {
-                        Expr::Ident(ref name) if name == "print_builtin" => {
-                            println!(
-                                "{}",
-                                args.iter()
-                                    .map(|arg| arg.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(" ")
-                            );
-                            Ok(Object::Unit)
-                        }
-                        Expr::Ident(ref name) if name == "get_timestrap_builtin" => {
-                            Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64))
-                        }
-                        _ => {
-                            let mut local_env = Env::extend(self.env);
-                            for (p, a) in params.iter().zip(args.into_iter()) {
-                                local_env.insert_value(p.clone(), a)?;
-                            }
-                            Evaluator::new(&mut local_env).eval_expr_tco(&body, false)
-                        }
+    fn match_pattern(&self, pattern: &Pattern, value: &Object) -> Option<Vec<(String, Object)>> {
+        match pattern {
+            Pattern::Ident(name) => match self.env.get_bind(name) {
+                Some(target) if is_uppercase_first_letter(name.as_str()) => {
+                    if target == value.clone() {
+                        Some(vec![])
+                    } else {
+                        None
                     }
                 }
-                _ => Err(EvalError::NotCallable),
+                _ => Some(if name == "_" {
+                    vec![]
+                } else {
+                    vec![(name.clone(), value.clone())]
+                }),
+            },
+            Pattern::ADTConstructor { name, args } => {
+                if let Object::ADT {
+                    variant, fields, ..
+                } = value
+                {
+                    if variant == name && fields.len() == args.len() {
+                        let mut binds = vec![];
+                        for (pat_arg, field_value) in args.iter().zip(fields.iter()) {
+                            if let Some(sub_binds) = self.match_pattern(pat_arg, field_value) {
+                                binds.extend(sub_binds);
+                            } else {
+                                return None;
+                            }
+                        }
+                        Some(binds)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
+            Pattern::Literal(literal) => match (literal, value) {
+                (Literal::Int(i), Object::Int(v)) if i == v => Some(vec![]),
+                (Literal::Float(f), Object::Float(v)) if f == v => Some(vec![]),
+                (Literal::String(s), Object::String(v)) if s == v => Some(vec![]),
+                (Literal::Char(c), Object::Char(v)) if c == v => Some(vec![]),
+                (Literal::Bool(b), Object::Bool(v)) if b == v => Some(vec![]),
+                _ => None,
+            },
         }
     }
 }

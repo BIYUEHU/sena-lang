@@ -1,3 +1,3 @@
-pub fn vec_boxify<T>(list: Vec<T>) -> Vec<Box<T>> {
-    list.into_iter().map(|x| Box::new(x)).collect()
+pub fn is_uppercase_first_letter(str: &str) -> bool {
+    str.chars().next().map_or(false, |c| c.is_uppercase())
 }

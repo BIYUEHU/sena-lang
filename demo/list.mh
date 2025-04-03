@@ -1,0 +1,3 @@
+type List = <A> Cons(A, List(A)) | Nil
+
+let intList = List(int)

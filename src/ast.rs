@@ -1,6 +1,44 @@
 use crate::token::Token;
 
 #[derive(PartialEq, Clone, Debug)]
+pub enum TypeExpr {
+    Var(String),
+    Con(String),
+    App(Box<TypeExpr>, Vec<TypeExpr>),
+    Arrow(Box<TypeExpr>, Box<TypeExpr>),
+    Literal(Literal),
+}
+
+impl Default for TypeExpr {
+    fn default() -> Self {
+        TypeExpr::Con("Unknown".into())
+    }
+}
+
+impl TryFrom<Expr> for TypeExpr {
+    type Error = ();
+
+    fn try_from(expr: Expr) -> Result<Self, ()> {
+        match expr {
+            Expr::Ident(name) => Ok(TypeExpr::Con(name)),
+            Expr::Literal(literal) => Ok(TypeExpr::Literal(literal)),
+            Expr::Call { callee, arguments } => Ok(TypeExpr::App(
+                Box::new(TypeExpr::try_from(*callee)?),
+                arguments
+                    .into_iter()
+                    .map(|arg| TypeExpr::try_from(arg))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            Expr::Infix(op, left, right) if op == Token::ThinArrow => Ok(TypeExpr::Arrow(
+                Box::new(TypeExpr::try_from(*left)?),
+                Box::new(TypeExpr::try_from(*right)?),
+            )),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
 pub enum Expr {
     Ident(String),
     Prefix(Token, Box<Expr>),
@@ -9,11 +47,11 @@ pub enum Expr {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
     },
-    Lambda {
-        type_params: Vec<(String, Box<Expr>)>,
-        params: Vec<(String, Option<Box<Expr>>)>,
+    Function {
+        type_params: Vec<(String, Box<TypeExpr>)>,
+        params: Vec<(String, Box<TypeExpr>)>,
         body: Box<Expr>,
-        return_type: Option<Box<Expr>>,
+        return_type: Box<TypeExpr>,
     },
     If {
         condition: Box<Expr>,
@@ -26,7 +64,7 @@ pub enum Expr {
     },
     LetIn {
         name: String,
-        type_decl: Option<Box<Expr>>,
+        type_decl: Box<TypeExpr>,
         value: Box<Expr>,
         body: Box<Expr>,
     },
@@ -48,12 +86,12 @@ pub enum Literal {
 pub enum Stmt {
     Let {
         name: String,
-        type_annotation: Option<Box<Expr>>,
+        type_annotation: Box<TypeExpr>,
         value: Box<Expr>,
     },
     Type {
         name: String,
-        type_annotation: Option<Box<Expr>>,
+        type_annotation: Box<TypeExpr>,
         type_params: Option<Vec<String>>,
         variants: Vec<TypeVariant>,
     },
@@ -122,8 +160,8 @@ pub struct MatchCase {
 #[derive(PartialEq, Clone, Debug)]
 pub enum Pattern {
     Ident(String),
-    Constructor { name: String, args: Vec<Pattern> },
-    Literal(Token),
+    ADTConstructor { name: String, args: Vec<Pattern> },
+    Literal(Literal),
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -134,7 +172,7 @@ pub struct TypeVariant {
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum TypeVariantFields {
-    Tuple(Vec<Box<Expr>>),
-    Record(Vec<(String, Box<Expr>)>),
+    Tuple(Vec<Box<TypeExpr>>),
+    Record(Vec<(String, Box<TypeExpr>)>),
     Unit,
 }

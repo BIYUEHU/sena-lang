@@ -1,6 +1,6 @@
 use mihama::ast::Stmt;
-use mihama::evaluator::env::Env;
-use mihama::evaluator::object::Object;
+use mihama::evaluator::env::new_evaluator_env;
+use mihama::evaluator::object::{Object, TypeInfo};
 use mihama::evaluator::Evaluator;
 use mihama::lexer::Lexer;
 use mihama::parser::Parser;
@@ -67,8 +67,9 @@ fn main() {
 
     let mut input = String::new();
     let mut mode = ReplMode::Evaluator;
-    let mut env = Env::new();
+    let mut env = new_evaluator_env();
     let mut evaluator = Evaluator::new(&mut env);
+    let mut view_type_info = false;
 
     loop {
         print!("{}", PROMPT);
@@ -77,6 +78,7 @@ fn main() {
         }
 
         input.clear();
+        view_type_info = false;
         std::io::stdin().read_line(&mut input).unwrap();
 
         if input.starts_with(".exit") {
@@ -107,14 +109,14 @@ fn main() {
         }
 
         if input.starts_with(".clear") {
-            env = Env::new();
+            env = new_evaluator_env();
             evaluator = Evaluator::new(&mut env);
             continue;
         }
 
         let code = if input.starts_with(".read") {
             if input.starts_with(".readc") {
-                env = Env::new();
+                env = new_evaluator_env();
                 evaluator = Evaluator::new(&mut env);
             }
             match std::fs::read_to_string(input.split_whitespace().last().unwrap()) {
@@ -124,6 +126,9 @@ fn main() {
                     continue;
                 }
             }
+        } else if input.starts_with(".t") {
+            view_type_info = true;
+            input.clone().as_str()[2..].to_string()
         } else {
             input.clone()
         };
@@ -149,7 +154,14 @@ fn main() {
                 Err(err) => println!("Parser error: {}", err),
             },
             ReplMode::Evaluator => match get_evaluator(&code, &mut evaluator) {
-                Ok(value) => println!("{}", value),
+                Ok(value) => println!(
+                    "{}",
+                    if view_type_info {
+                        value.type_info()
+                    } else {
+                        value.to_string()
+                    }
+                ),
                 Err(err) => println!("{}", err),
             },
         }
