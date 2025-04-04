@@ -1,9 +1,6 @@
-use crate::ast::{Expr, TypeExpr};
-
-use super::{
-    object::{Object, TypeObject, PRIMIVE_TYPES},
-    EvalError,
-};
+use crate::checker::object::{TypeObject, PRIMIVE_TYPES};
+use crate::evaluator::{object::Object, EvalError};
+use crate::parser::ast::Expr;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -64,7 +61,7 @@ impl<'a, T: Clone> Env<'a, T> {
     }
 }
 
-pub fn new_typechecker_env<'a>() -> TypecheckerEnv<'a> {
+pub fn new_checker_env<'a>() -> CheckerEnv<'a> {
     let mut env = Env::<'_, TypeObject>::new();
     PRIMIVE_TYPES.iter().for_each(|t| {
         env.insert_bind(t.to_string(), t.clone()).unwrap();
@@ -82,12 +79,9 @@ pub fn new_evaluator_env<'a>() -> EvaluatorEnv<'a> {
         "print".to_string(),
         Object::Function {
             type_params: vec![],
-            params: vec![(
-                "...args".to_string(),
-                Box::new(TypeExpr::Con("*".to_string())),
-            )],
+            params: vec![("...args".to_string(), Box::new(TypeObject::Any.into()))],
             body: Box::new(Expr::Ident("print".to_string())),
-            return_type: Box::new(TypeExpr::default()),
+            return_type: Box::new(TypeObject::Unit.into()),
         },
     )
     .unwrap();
@@ -104,5 +98,5 @@ pub fn new_evaluator_env<'a>() -> EvaluatorEnv<'a> {
     env
 }
 
-pub type TypecheckerEnv<'a> = Env<'a, TypeObject>;
+pub type CheckerEnv<'a> = Env<'a, TypeObject>;
 pub type EvaluatorEnv<'a> = Env<'a, Object>;

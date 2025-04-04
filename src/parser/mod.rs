@@ -1,9 +1,10 @@
-use std::fmt::{self, Display, Formatter};
-
-use crate::ast::{
+use crate::lexer::token::{Token, TokenData};
+use ast::{
     Expr, Literal, MatchCase, Pattern, Precedence, Stmt, TypeExpr, TypeVariant, TypeVariantFields,
 };
-use crate::token::{Token, TokenData};
+use std::fmt::{self, Display, Formatter};
+
+pub mod ast;
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -482,8 +483,6 @@ impl Parser {
         Ok(expr)
     }
 
-    // fn lambda(&mut self) {}
-
     fn call(&mut self, callee: Expr) -> Result<Expr, ParseError> {
         Ok(Expr::Call {
             callee: Box::new(callee),
@@ -621,10 +620,21 @@ impl Parser {
         while self.next_token_is(&Token::Arm) {
             self.next_token();
             let pattern = self.pattern()?;
+            let guard = if self.next_token_is(&Token::If) {
+                self.next_token();
+                self.next_token();
+                Box::new(self.expression(Precedence::Lowest)?)
+            } else {
+                Box::new(Expr::Literal(Literal::Bool(true)))
+            };
             self.next_token_consume(&Token::Arrow, "'=>' after pattern")?;
             self.next_token();
             let body = Box::new(self.expression(Precedence::Lowest)?);
-            cases.push(MatchCase { pattern, body });
+            cases.push(MatchCase {
+                pattern,
+                body,
+                guard,
+            });
         }
         if cases.is_empty() {
             return Err(self.error_invalid_syntax("match expression requires at least one case"));
@@ -729,7 +739,13 @@ mod tests {
             Lexer::new(input).filter_map(|result| result.ok()).collect(),
             false,
         )
-        .filter_map(|result| result.ok())
+        .filter_map(|result| {
+            result
+                .map_err(|error| {
+                    eprintln!("Error: {}", error);
+                })
+                .ok()
+        })
         .collect()
     }
 
@@ -897,7 +913,6 @@ mod tests {
 
     #[test]
     fn test_function_expressions() {
-        // Simple Lambda
         expr(
             "(x, y) => x + y",
             Expr::Function {
@@ -915,7 +930,6 @@ mod tests {
             },
         );
 
-        // Lambda with parameter types
         expr(
             "(x: Int, y: Int) => x + y",
             Expr::Function {
@@ -951,7 +965,6 @@ mod tests {
             },
         );
 
-        // Single parameter Lambda
         expr(
             "(x) => x",
             Expr::Function {
@@ -1061,17 +1074,28 @@ mod tests {
             },
         );
         expr(
-            "match x then | 0 => 1 | _ => 2",
+            "match x then | 0 => 1 | x if x > 0 => 1 | _ => 2",
             Expr::Match {
                 expr: Box::new(Expr::Ident("x".to_string())),
                 cases: vec![
                     MatchCase {
                         pattern: Pattern::Literal(Literal::Int(0)),
                         body: Box::new(Expr::Literal(Literal::Int(1))),
+                        guard: Box::new(Expr::Literal(Literal::Bool(true))),
+                    },
+                    MatchCase {
+                        pattern: Pattern::Ident("x".to_string()),
+                        body: Box::new(Expr::Literal(Literal::Int(1))),
+                        guard: Box::new(Expr::Infix(
+                            Token::Greater,
+                            Box::new(Expr::Ident("x".to_string())),
+                            Box::new(Expr::Literal(Literal::Int(0))),
+                        )),
                     },
                     MatchCase {
                         pattern: Pattern::Ident("_".to_string()),
                         body: Box::new(Expr::Literal(Literal::Int(2))),
+                        guard: Box::new(Expr::Literal(Literal::Bool(true))),
                     },
                 ],
             },

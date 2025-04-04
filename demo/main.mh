@@ -17,7 +17,7 @@ let add: Int -> Int -> Int = x => y => x + y
 let add: Int -> Int -> Int = (x, y) => x + y
 let add = (x: Int, y: Int) -> Int => x + y
 
-let fibonacii: Int -> Int =
+let fibonacii: Int -> Int
  | 1 => 1
  | 2 => 1
  | x => fibonacii(x - 1) + fibonacii(x - 2)

@@ -1,5 +1,17 @@
-use crate::ast::{Expr, TypeExpr};
+use crate::{
+    checker::object::TypeObject,
+    parser::ast::{Expr, TypeExpr},
+    utils::format_type_name,
+};
 use std::fmt::{self, Display, Formatter};
+
+pub trait PrettyPrint {
+    fn pretty_print(&self) -> String;
+}
+
+pub trait TypeInfo {
+    fn type_info(&self) -> String;
+}
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Object {
@@ -18,109 +30,80 @@ pub enum Object {
     Type(TypeObject),
     ADT {
         type_name: String,
+        type_params: Vec<Box<TypeExpr>>,
         variant: String,
         fields: Vec<Object>,
     },
     ADTConstructor {
         type_name: String,
+        type_params: Vec<Box<TypeExpr>>,
         variant: String,
-        param_count: usize,
+        fields: Vec<Box<TypeExpr>>,
+    },
+    TypeConstructor {
+        type_name: String,
+        type_params: Vec<String>,
+        constructors: Vec<(String, Vec<TypeExpr>)>,
     },
     Unit,
 }
 
-/// Trait for detailed internal inspection (e.g. for REPL debug output)
-pub trait Inspect {
-    fn inspect(&self) -> String;
-}
-
-/// Trait for user-friendly output (for target language I/O)
-pub trait PrettyPrint {
-    fn pretty_print(&self) -> String;
-}
-
-/// Trait for detailed type information output (类似于 Haskell 的 :t)
-pub trait TypeInfo {
-    fn type_info(&self) -> String;
-}
-
-impl Display for TypeExpr {
+impl Display for Object {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            TypeExpr::Var(v) => write!(f, "{}", v),
-            TypeExpr::Con(c) => write!(f, "{}", c),
-            TypeExpr::App(t1, ts) => {
-                // TODO
-                write!(f, "({}) {:?}", t1, ts)
-            }
-            TypeExpr::Arrow(t1, t2) => {
-                write!(f, "{} -> {}", t1, t2)
-            }
-            TypeExpr::Literal(l) => write!(f, "{:?}", l),
-        }
-    }
-}
-
-// TODO: merge to display trait
-impl Inspect for Object {
-    fn inspect(&self) -> String {
-        match self {
-            Object::Int(i) => format!("Int({})", i),
-            Object::Float(f) => format!("Float({})", f),
-            Object::String(s) => format!("String(\"{}\")", s),
-            Object::Char(c) => format!("Char('{}')", c),
-            Object::Bool(b) => format!("Bool({})", b),
+            Object::Int(i) => write!(f, "Int({})", i),
+            Object::Float(fl) => write!(f, "Float({})", fl),
+            Object::String(s) => write!(f, "String(\"{}\")", s),
+            Object::Char(c) => write!(f, "Char('{}')", c),
+            Object::Bool(b) => write!(f, "Bool({})", b),
             Object::Array(arr) => {
-                let elems: Vec<String> = arr.iter().map(|o| o.inspect()).collect();
-                format!("Array([{}])", elems.join(", "))
+                let elems: Vec<String> = arr.iter().map(|o| o.to_string()).collect();
+                write!(f, "Array([{}])", elems.join(", "))
             }
-            Object::Function {
-                type_params,
-                params,
-                return_type,
-                ..
-            } => {
-                let tps: Vec<String> = type_params
-                    .iter()
-                    .map(|(n, t)| format!("{}:{}", n, t))
-                    .collect();
-                let ps: Vec<String> = params.iter().map(|(n, t)| format!("{}:{}", n, t)).collect();
-                format!(
-                    "<Function [{}] ({}) -> {}>",
-                    tps.join(", "),
-                    ps.join(", "),
-                    return_type,
-                )
+            Object::Function { .. } => {
+                write!(f, "Function({})", self.type_info())
             }
-            Object::Type(t) => format!("Kind({})", t),
+            Object::Type(t) => write!(f, "Kind({})", t),
             Object::ADT {
                 type_name,
+                type_params,
                 variant,
                 fields,
             } => {
-                // TODO
                 if fields.is_empty() {
-                    format!("ADT({}:{})", type_name, variant)
+                    write!(
+                        f,
+                        "ADT({}::{})",
+                        format_type_name(type_name.clone(), type_params.clone()),
+                        variant
+                    )
                 } else {
-                    let fs: Vec<String> = fields.iter().map(|o| o.inspect()).collect();
-                    format!("ADT({}:{}({}))", type_name, variant, fs.join(", "))
+                    let fs: Vec<String> = fields.iter().map(|o| o.to_string()).collect();
+                    write!(f, "ADT({}::{}({}))", type_name, variant, fs.join(", "))
                 }
             }
             Object::ADTConstructor {
                 type_name,
+                type_params,
                 variant,
-                param_count,
+                fields,
             } => {
-                if *param_count == 0 {
-                    format!("ADTConstructor({}:{})", type_name, variant)
-                } else {
-                    format!(
-                        "ADTConstructor({}:{} ({} params))",
-                        type_name, variant, param_count
-                    )
-                }
+                write!(
+                    f,
+                    "ADTConstructor({}::{}({}))",
+                    format_type_name(type_name.clone(), type_params.clone()),
+                    variant,
+                    fields
+                        .iter()
+                        .map(|t| (**t).to_string())
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
             }
-            Object::Unit => "Unit".to_string(),
+            Object::TypeConstructor { .. } => {
+                write!(f, "TypeConstructor({})", self.type_info())
+            }
+            Object::Unit => write!(f, "()"),
         }
     }
 }
@@ -141,33 +124,33 @@ impl PrettyPrint for Object {
             Object::Type(t) => t.to_string(),
             Object::ADT {
                 type_name,
+                type_params,
                 variant,
                 fields,
             } => {
+                let type_name = format_type_name(type_name.clone(), type_params.clone());
                 if fields.is_empty() {
-                    format!("{}:{}()", type_name, variant)
+                    format!("{}::{}", type_name, variant)
                 } else {
-                    let fs: Vec<String> = fields.iter().map(|o| o.pretty_print()).collect();
-                    format!("{}:{}({})", type_name, variant, fs.join(", "))
+                    format!(
+                        "{}::{}({})",
+                        type_name,
+                        variant,
+                        fields
+                            .iter()
+                            .map(|o| o.pretty_print())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 }
             }
-            Object::ADTConstructor {
-                type_name,
-                variant,
-                param_count,
-            } => {
-                if *param_count == 0 {
-                    format!("{}:{}", type_name, variant)
-                } else {
-                    format!("{}:{}(...)", type_name, variant)
-                }
-            }
+            Object::ADTConstructor { .. } => "<adt_constructor>".to_string(),
+            Object::TypeConstructor { .. } => "<type_constructor>".to_string(),
             Object::Unit => "()".to_string(),
         }
     }
 }
 
-// --- 实现 TypeInfo：输出目标值的类型信息 --- //
 impl TypeInfo for Object {
     fn type_info(&self) -> String {
         match self {
@@ -176,11 +159,12 @@ impl TypeInfo for Object {
             Object::String(_) => "String".to_string(),
             Object::Char(_) => "Char".to_string(),
             Object::Bool(_) => "Bool".to_string(),
+            Object::Type(_) => "Kind".to_string(),
             Object::Array(arr) => {
                 if let Some(first) = arr.first() {
                     format!("[{}]", first.type_info())
                 } else {
-                    "[?]".to_string()
+                    "[Unknown]".to_string()
                 }
             }
             Object::Function {
@@ -189,109 +173,60 @@ impl TypeInfo for Object {
                 return_type,
                 ..
             } => {
-                let tps: Vec<String> = type_params
+                let type_params = type_params
                     .iter()
-                    .map(|(n, t)| format!("{}:{}", n, t))
-                    .collect();
-                let ps: Vec<String> = params.iter().map(|(n, t)| format!("{}:{}", n, t)).collect();
-                format!(
-                    "<Function [{}] ({}) -> {}>",
-                    tps.join(", "),
-                    ps.join(", "),
-                    return_type
-                )
+                    .map(|(n, t)| format!("{}: {}", n, t))
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                let params = if params.is_empty() {
+                    "Unit".to_string()
+                } else {
+                    params
+                        .iter()
+                        .map(|(_, t)| {
+                            if matches!(**t, TypeExpr::Arrow(..)) {
+                                format!("({})", t)
+                            } else {
+                                t.to_string()
+                            }
+                        })
+                        .collect::<Vec<String>>()
+                        .join(" -> ")
+                };
+                if type_params.is_empty() {
+                    format!("{} -> {}", params, return_type)
+                } else {
+                    format!("<{}> {} -> {}", type_params, params, return_type)
+                }
             }
-            Object::Type(t) => format!("{}", t),
             Object::ADT {
                 type_name,
-                variant,
-                fields,
-            } => {
-                let fs: Vec<String> = fields.iter().map(|o| o.type_info()).collect();
-                if fs.is_empty() {
-                    format!("{}:{}()", type_name, variant)
-                } else {
-                    format!("{}:{}({})", type_name, variant, fs.join(", "))
-                }
-            }
+                type_params,
+                ..
+            } => format_type_name(type_name.clone(), type_params.clone()),
             Object::ADTConstructor {
                 type_name,
-                variant,
-                param_count,
-            } => {
-                if *param_count == 0 {
-                    format!("{}:{}", type_name, variant)
-                } else {
-                    format!("{}:{} ({} params)", type_name, variant, param_count)
-                }
-            }
+                type_params,
+                fields,
+                ..
+            } => format!(
+                "{} -> {}",
+                fields
+                    .iter()
+                    .map(|_| "Kind")
+                    .collect::<Vec<_>>()
+                    .join(" -> "),
+                format_type_name(type_name.clone(), type_params.clone()),
+            ),
+            Object::TypeConstructor { type_params, .. } => format!(
+                "{} -> Kind",
+                type_params
+                    .iter()
+                    .map(|_| "Kind")
+                    .collect::<Vec<_>>()
+                    .join(" -> "),
+            ),
             Object::Unit => "Unit".to_string(),
         }
     }
 }
-
-impl Display for Object {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}", self.inspect())
-    }
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub enum TypeObject {
-    Kind,
-    Int,
-    Float,
-    String,
-    Char,
-    Bool,
-    Array(Box<TypeObject>),
-    Function(Box<TypeObject>, Box<TypeObject>),
-    ADT {
-        name: String,
-        type_params: Vec<String>,                   // e.g., ["a"] for List a
-        constructors: Vec<(String, Vec<TypeExpr>)>, // (variant_name, field_types)
-    },
-}
-
-impl Into<TypeExpr> for TypeObject {
-    fn into(self) -> TypeExpr {
-        match self {
-            TypeObject::Int
-            | TypeObject::Float
-            | TypeObject::String
-            | TypeObject::Char
-            | TypeObject::Bool => TypeExpr::Con(self.to_string()),
-            _ => unimplemented!(),
-        }
-    }
-}
-
-impl Display for TypeObject {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            TypeObject::Kind => write!(f, "Kind"),
-            TypeObject::Int => write!(f, "Int"),
-            TypeObject::Float => write!(f, "Float"),
-            TypeObject::String => write!(f, "String"),
-            TypeObject::Char => write!(f, "Char"),
-            TypeObject::Bool => write!(f, "Bool"),
-            TypeObject::Array(t) => write!(f, "[{}]", t),
-            TypeObject::Function(param, ret) => {
-                if matches!(**param, TypeObject::Function(_, _)) {
-                    write!(f, "({}) -> {}", param, ret)
-                } else {
-                    write!(f, "{} -> {}", param, ret)
-                }
-            }
-            TypeObject::ADT { name, .. } => write!(f, "{}", name),
-        }
-    }
-}
-
-pub static PRIMIVE_TYPES: [TypeObject; 5] = [
-    TypeObject::Int,
-    TypeObject::Float,
-    TypeObject::String,
-    TypeObject::Char,
-    TypeObject::Bool,
-];

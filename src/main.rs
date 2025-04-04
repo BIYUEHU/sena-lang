@@ -1,8 +1,8 @@
-use mihama::ast::Stmt;
-use mihama::evaluator::env::new_evaluator_env;
-use mihama::evaluator::object::{Object, TypeInfo};
+use mihama::common::env::new_evaluator_env;
+use mihama::evaluator::object::{Object, PrettyPrint, TypeInfo};
 use mihama::evaluator::Evaluator;
 use mihama::lexer::Lexer;
+use mihama::parser::ast::Stmt;
 use mihama::parser::Parser;
 use std::io::Write;
 
@@ -69,7 +69,6 @@ fn main() {
     let mut mode = ReplMode::Evaluator;
     let mut env = new_evaluator_env();
     let mut evaluator = Evaluator::new(&mut env);
-    let mut view_type_info = false;
 
     loop {
         print!("{}", PROMPT);
@@ -78,7 +77,7 @@ fn main() {
         }
 
         input.clear();
-        view_type_info = false;
+        let mut view_type_info = false;
         std::io::stdin().read_line(&mut input).unwrap();
 
         if input.starts_with(".exit") {
@@ -154,14 +153,13 @@ fn main() {
                 Err(err) => println!("Parser error: {}", err),
             },
             ReplMode::Evaluator => match get_evaluator(&code, &mut evaluator) {
-                Ok(value) => println!(
-                    "{}",
+                Ok(value) => {
                     if view_type_info {
-                        value.type_info()
+                        println!("{} : {}", value.pretty_print(), value.type_info())
                     } else {
-                        value.to_string()
+                        println!("{}", value.to_string())
                     }
-                ),
+                }
                 Err(err) => println!("{}", err),
             },
         }

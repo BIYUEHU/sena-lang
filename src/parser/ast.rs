@@ -1,4 +1,7 @@
-use crate::token::Token;
+use core::fmt;
+use std::fmt::{Display, Formatter};
+
+use crate::lexer::token::Token;
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum TypeExpr {
@@ -34,6 +37,34 @@ impl TryFrom<Expr> for TypeExpr {
                 Box::new(TypeExpr::try_from(*right)?),
             )),
             _ => Err(()),
+        }
+    }
+}
+
+impl Display for TypeExpr {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            TypeExpr::Var(v) => write!(f, "{}", v),
+            TypeExpr::Con(c) => write!(f, "{}", c),
+            TypeExpr::App(t1, ts) => {
+                write!(
+                    f,
+                    "({}) {}",
+                    t1,
+                    ts.iter()
+                        .map(|t| format!("{}", t))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }
+            TypeExpr::Arrow(t1, t2) => {
+                if matches!(**t1, TypeExpr::Arrow(..)) {
+                    write!(f, "({}) -> {}", t1, t2)
+                } else {
+                    write!(f, "{} -> {}", t1, t2)
+                }
+            }
+            TypeExpr::Literal(l) => write!(f, "Literal({:?})", l),
         }
     }
 }
@@ -155,6 +186,7 @@ pub type Program = Vec<Stmt>;
 pub struct MatchCase {
     pub pattern: Pattern,
     pub body: Box<Expr>,
+    pub guard: Box<Expr>,
 }
 
 #[derive(PartialEq, Clone, Debug)]

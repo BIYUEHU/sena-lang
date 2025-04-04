@@ -1,12 +1,12 @@
-use crate::ast::{Expr, Literal, Pattern, Program, Stmt, TypeExpr, TypeVariantFields};
-use crate::token::Token;
+use crate::checker::object::TypeObject;
+use crate::common::env::{Env, EvaluatorEnv};
+use crate::lexer::token::Token;
+use crate::parser::ast::{Expr, Literal, Pattern, Program, Stmt, TypeExpr, TypeVariantFields};
 use crate::utils::is_uppercase_first_letter;
-use env::{Env, EvaluatorEnv};
-use object::{Object, PrettyPrint, TypeObject};
+use object::{Object, PrettyPrint};
 use std::fmt::{self, Display, Formatter};
 use std::time::UNIX_EPOCH;
 
-pub mod env;
 pub mod object;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,34 +70,6 @@ impl<'a> Evaluator<'a> {
                 Ok(Object::Unit)
             }
             "get_timestrap" => Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64)),
-            name if name.starts_with("type_constructor_") => {
-                let name = &name["type_constructor_".len()..];
-                // Type constructor application
-                if let Some(Object::Type(TypeObject::ADT {
-                    name,
-                    type_params,
-                    constructors,
-                })) = self.env.get_bind(&name)
-                {
-                    if type_params.len() != args.len() {
-                        return Err(EvalError::ArityMismatch);
-                    }
-                    let applied_types = args
-                        .into_iter()
-                        .map(|arg| match arg {
-                            Object::Type(t) => Ok(t),
-                            _ => Err(EvalError::TypeMismatch),
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok(Object::Type(TypeObject::ADT {
-                        name: name.clone(),
-                        type_params: vec![], // Fully applied
-                        constructors: constructors.clone(),
-                    }))
-                } else {
-                    Err(EvalError::UndefinedVariable(name.to_string()))
-                }
-            }
             _ => Err(EvalError::UndefinedVariable(identify.to_string())),
         }
     }
@@ -126,56 +98,55 @@ impl<'a> Evaluator<'a> {
                 let constructors: Vec<(String, Vec<TypeExpr>)> = variants
                     .iter()
                     .map(|variant| {
-                        let field_types = match &variant.fields {
-                            TypeVariantFields::Unit => vec![],
-                            TypeVariantFields::Tuple(types) => {
-                                types.iter().map(|t| *t.clone()).collect()
-                            }
-                            TypeVariantFields::Record(fields) => {
-                                fields.iter().map(|(_, t)| *t.clone()).collect()
-                            }
-                        };
-                        (variant.name.clone(), field_types)
+                        (
+                            variant.name.clone(),
+                            match &variant.fields {
+                                TypeVariantFields::Unit => vec![],
+                                TypeVariantFields::Tuple(types) => {
+                                    types.iter().map(|t| *t.clone()).collect()
+                                }
+                                TypeVariantFields::Record(fields) => {
+                                    fields.iter().map(|(_, t)| *t.clone()).collect()
+                                }
+                            },
+                        )
                     })
                     .collect();
 
                 // Handle type constructor
-                match type_params {
+                let type_params_count = match type_params {
                     None => {
                         // No type parameters: Add type constructor as a TypeObject
-                        let type_obj = TypeObject::ADT {
-                            name: name.clone(),
-                            type_params: vec![],
-                            constructors: constructors.clone(),
-                        };
-                        self.env.insert_bind(name.clone(), Object::Type(type_obj))?;
-                    }
-                    Some(params) => {
-                        // With type parameters: Add type constructor as a function
-                        let type_constructor = Object::Function {
-                            type_params: vec![],
-                            params: params
-                                .clone()
-                                .into_iter()
-                                .map(|t| (t, Box::new(TypeObject::Kind.into())))
-                                .collect::<Vec<_>>(),
-                            body: Box::new(Expr::Ident(format!("type_constructor_{}", name))), // Placeholder, handled specially in eval_expr
-                            return_type: Box::new({
-                                let mut return_type: TypeExpr = TypeObject::Kind.into();
-                                for _ in params {
-                                    return_type = TypeExpr::Arrow(
-                                        Box::new(return_type.clone()),
-                                        Box::new(TypeObject::Kind.into()),
-                                    );
-                                }
-                                return_type
+                        self.env.insert_bind(
+                            name.clone(),
+                            Object::Type(TypeObject::ADT {
+                                name: name.clone(),
+                                type_params: vec![],
+                                constructors: constructors.clone(),
                             }),
-                        };
-                        self.env.insert_bind(name.clone(), type_constructor)?;
+                        )?;
+                        0
                     }
-                }
-
-                // Handle value constructors
+                    Some(type_params) => {
+                        // With type parameters: Add type constructor as a function
+                        self.env.insert_bind(
+                            name.clone(),
+                            Object::TypeConstructor {
+                                type_name: name.clone(),
+                                type_params: type_params.clone(),
+                                constructors: constructors.clone(),
+                            },
+                        )?;
+                        type_params.len()
+                    }
+                };
+                let type_params = {
+                    let mut type_params = vec![];
+                    for _ in 0..type_params_count {
+                        type_params.push(Box::new(TypeObject::Kind.into()));
+                    }
+                    type_params
+                };
                 for variant in variants {
                     let variant_name = variant.name.clone();
                     match &variant.fields {
@@ -183,28 +154,32 @@ impl<'a> Evaluator<'a> {
                             // No value parameters: Direct ADT value
                             let adt_value = Object::ADT {
                                 type_name: name.clone(),
+                                type_params: type_params.clone(),
                                 variant: variant_name.clone(),
                                 fields: vec![],
                             };
                             self.env.insert_bind(variant_name.clone(), adt_value)?;
                         }
-                        TypeVariantFields::Tuple(field_types) => {
+                        TypeVariantFields::Tuple(fields) => {
                             // With value parameters: ADT constructor function
-                            let param_count = field_types.len();
                             let constructor = Object::ADTConstructor {
                                 type_name: name.clone(),
+                                type_params: type_params.clone(),
                                 variant: variant_name.clone(),
-                                param_count,
+                                fields: fields.clone(),
                             };
                             self.env.insert_bind(variant_name.clone(), constructor)?;
                         }
                         TypeVariantFields::Record(fields) => {
                             // Record fields treated similarly to tuples
-                            let param_count = fields.len();
                             let constructor = Object::ADTConstructor {
                                 type_name: name.clone(),
+                                type_params: type_params.clone(),
                                 variant: variant_name.clone(),
-                                param_count,
+                                fields: fields
+                                    .iter()
+                                    .map(|(_, t)| Box::new(*t.clone()))
+                                    .collect::<Vec<_>>(),
                             };
                             self.env.insert_bind(variant_name.clone(), constructor)?;
                         }
@@ -336,13 +311,7 @@ impl<'a> Evaluator<'a> {
                             }
                         };
                         match *body {
-                            Expr::Ident(ref name) => {
-                                // TODO
-                                // if !name.ends_with("!") {
-                                //     check_params()?;
-                                // }
-                                self.eval_internal_func(name.as_str(), args)
-                            }
+                            Expr::Ident(ref name) => self.eval_internal_func(name.as_str(), args),
                             _ => {
                                 check_params()?;
                                 let mut local_env = Env::extend(self.env);
@@ -355,17 +324,46 @@ impl<'a> Evaluator<'a> {
                     }
                     Object::ADTConstructor {
                         type_name,
+                        type_params,
                         variant,
-                        param_count,
+                        fields,
                     } => {
-                        if args.len() != param_count {
+                        if args.len() != fields.len() {
                             return Err(EvalError::ArityMismatch);
                         }
                         Ok(Object::ADT {
                             type_name,
+                            type_params,
                             variant,
                             fields: args,
                         })
+                    }
+                    Object::TypeConstructor {
+                        type_name,
+                        type_params,
+                        constructors,
+                    } => {
+                        if args.len() != type_params.len() {
+                            return Err(EvalError::ArityMismatch);
+                        }
+                        Ok(Object::Type(TypeObject::ADT {
+                            name: type_name.clone(),
+                            type_params: vec![],
+                            constructors: constructors
+                                .into_iter()
+                                .map(|(name, args)| {
+                                    (
+                                        name,
+                                        args.into_iter()
+                                            .map(|type_expr| {
+                                                // TODO: checker should implement type application and type calculation
+                                                type_expr
+                                            })
+                                            .collect(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        }))
                     }
                     _ => Err(EvalError::NotCallable),
                 }
@@ -419,7 +417,12 @@ impl<'a> Evaluator<'a> {
                             case_env.insert_bind(name, value)?;
                         }
                         let mut case_evaluator = Evaluator::new(&mut case_env);
-                        return case_evaluator.eval_expr(&case.body);
+                        if case_evaluator
+                            .eval_expr(&case.guard)?
+                            .eq(&Object::Bool(true))
+                        {
+                            return case_evaluator.eval_expr(&case.body);
+                        }
                     }
                 }
                 Err(EvalError::PatternMatchFailure)

@@ -1,6 +1,8 @@
 use std::fmt::{self, Display, Formatter};
 
-use crate::token::{Token, TokenData};
+pub mod token;
+
+use token::{Token, TokenData};
 
 #[derive(Debug)]
 pub enum LexerError {
@@ -340,21 +342,21 @@ impl<'a> Lexer<'a> {
     }
 
     fn scan_string(&mut self) -> Option<Token> {
-        let mut string = String::new();
+        let mut str = String::new();
 
         loop {
             self.read_char();
             match self.ch {
-                '"' => return Some(Token::String(string)),
+                '"' => return Some(Token::String(str)),
                 '\\' => {
                     self.read_char();
                     match self.handle_escape_token(self.ch) {
-                        Some(ch) => string.push(ch),
+                        Some(ch) => str.push(ch),
                         None => return None,
                     }
                 }
                 '\0' => return None,
-                ch => string.push(ch),
+                ch => str.push(ch),
             }
         }
     }
@@ -426,7 +428,6 @@ mod tests {
     use super::Token::*;
     use super::*;
 
-    // 辅助函数：将Lexer的结果转换为Token Vec
     fn lex(input: &str) -> Vec<Token> {
         Lexer::new(input)
             .filter_map(|result| result.ok())
@@ -434,7 +435,6 @@ mod tests {
             .collect()
     }
 
-    // 辅助函数：检查是否产生预期的词法错误
     fn expect_error(input: &str) -> LexerError {
         Lexer::new(input)
             .find_map(|result| result.err())
