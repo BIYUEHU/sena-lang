@@ -1,8 +1,9 @@
-use mihama::common::env::new_evaluator_env;
+use mihama::checker::Checker;
+use mihama::common::env::{new_checker_env, new_evaluator_env};
 use mihama::evaluator::object::{Object, PrettyPrint, TypeInfo};
 use mihama::evaluator::Evaluator;
 use mihama::lexer::Lexer;
-use mihama::parser::ast::Stmt;
+use mihama::parser::ast::{Program, Stmt};
 use mihama::parser::Parser;
 use std::io::Write;
 
@@ -11,6 +12,7 @@ const PROMPT: &str = ">> ";
 enum ReplMode {
     Lexer,
     Parser,
+    Checker,
     Evaluator,
 }
 
@@ -35,7 +37,7 @@ fn get_parser(code: &str) -> Result<Parser, String> {
     }
 }
 
-fn get_evaluator(code: &str, evaluator: &mut Evaluator) -> Result<Object, String> {
+fn get_checker(code: &str, checker: &mut Checker) -> Result<Program, String> {
     let parser = get_parser(code)?;
     let mut error = None;
     let program = parser
@@ -53,10 +55,20 @@ fn get_evaluator(code: &str, evaluator: &mut Evaluator) -> Result<Object, String
     if let Some(err) = error {
         Err(err)
     } else {
-        evaluator
-            .eval(&program)
-            .map_err(|err| format!("Evaluator error: {}", err))
+        Ok(checker
+            .check(&program)
+            .map_err(|err| format!("Checker error: {}", err))?)
     }
+}
+
+fn get_evaluator(
+    code: &str,
+    checker: &mut Checker,
+    evaluator: &mut Evaluator,
+) -> Result<Object, String> {
+    evaluator
+        .eval(&get_checker(code, checker)?)
+        .map_err(|err| format!("Evaluator error: {}", err))
 }
 
 fn main() {
@@ -68,7 +80,9 @@ fn main() {
     let mut input = String::new();
     let mut mode = ReplMode::Evaluator;
     let mut env = new_evaluator_env();
+    let mut env2 = new_checker_env();
     let mut evaluator = Evaluator::new(&mut env);
+    let mut checker = Checker::new(&mut env2);
 
     loop {
         print!("{}", PROMPT);
@@ -94,6 +108,10 @@ fn main() {
                 "parser" => {
                     println!("Switched to parser mode");
                     ReplMode::Parser
+                }
+                "checker" => {
+                    println!("Switched to checker mode");
+                    ReplMode::Checker
                 }
                 "evaluator" => {
                     println!("Switched to evaluator mode");
@@ -152,7 +170,15 @@ fn main() {
                 }
                 Err(err) => println!("Parser error: {}", err),
             },
-            ReplMode::Evaluator => match get_evaluator(&code, &mut evaluator) {
+            ReplMode::Checker => match get_checker(&code, &mut checker) {
+                Ok(program) => {
+                    for stmt in program {
+                        println!(" : {:?}", stmt)
+                    }
+                }
+                Err(err) => println!("Checker error: {}", err),
+            },
+            ReplMode::Evaluator => match get_evaluator(&code, &mut checker, &mut evaluator) {
                 Ok(value) => {
                     if view_type_info {
                         println!("{} : {}", value.pretty_print(), value.type_info())

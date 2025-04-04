@@ -1,5 +1,5 @@
 use crate::checker::object::TypeObject;
-use crate::common::env::{Env, EvaluatorEnv};
+use crate::common::env::{Env, EnvError, EvaluatorEnv};
 use crate::lexer::token::Token;
 use crate::parser::ast::{Expr, Literal, Pattern, Program, Stmt, TypeExpr, TypeVariantFields};
 use crate::utils::is_uppercase_first_letter;
@@ -18,6 +18,16 @@ pub enum EvalError {
     NotCallable,
     RedefinedIdentifier(String),
     PatternMatchFailure,
+}
+
+impl From<EnvError> for EvalError {
+    fn from(error: EnvError) -> Self {
+        match error {
+            EnvError::RedefinedIdentifier(name) => {
+                EvalError::RedefinedIdentifier(name)
+            }
+        }
+    }
 }
 
 impl Display for EvalError {

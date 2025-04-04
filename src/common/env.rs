@@ -1,5 +1,5 @@
 use crate::checker::object::{TypeObject, PRIMIVE_TYPES};
-use crate::evaluator::{object::Object, EvalError};
+use crate::evaluator::object::Object;
 use crate::parser::ast::Expr;
 use std::collections::HashMap;
 
@@ -7,6 +7,11 @@ use std::collections::HashMap;
 pub struct Env<'a, T: Clone> {
     pub parent: Option<&'a Env<'a, T>>,
     pub binds: HashMap<String, T>,
+}
+
+#[derive(Debug, Clone)]
+pub enum EnvError {
+    RedefinedIdentifier(String),
 }
 
 impl<T: Clone> PartialEq for Env<'_, T> {
@@ -30,9 +35,9 @@ impl<'a, T: Clone> Env<'a, T> {
         }
     }
 
-    pub fn insert_bind(&mut self, name: String, value: T) -> Result<(), EvalError> {
+    pub fn insert_bind(&mut self, name: String, value: T) -> Result<(), EnvError> {
         if self.binds.contains_key(&name) {
-            Err(EvalError::RedefinedIdentifier(format!(
+            Err(EnvError::RedefinedIdentifier(format!(
                 "Identifier '{}' is already defined",
                 name
             )))
