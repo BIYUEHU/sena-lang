@@ -4,7 +4,7 @@ use mihama::evaluator::object::{Object, PrettyPrint, TypeInfo};
 use mihama::evaluator::Evaluator;
 use mihama::lexer::Lexer;
 use mihama::parser::ast::{Program, Stmt};
-use mihama::parser::Parser;
+use mihama::parser::{ParseError, Parser};
 use std::io::Write;
 
 const PROMPT: &str = ">> ";
@@ -14,9 +14,10 @@ enum ReplMode {
     Parser,
     Checker,
     Evaluator,
+    UnsafeEvaluator,
 }
 
-fn get_parser(code: &str) -> Result<Parser, String> {
+fn parse(code: &str) -> Result<Vec<Result<Stmt, ParseError>>, String> {
     let mut error = None;
     let token_data = Lexer::new(code)
         .filter_map(|result| match result {
@@ -33,14 +34,14 @@ fn get_parser(code: &str) -> Result<Parser, String> {
     if let Some(err) = error {
         Err(err)
     } else {
-        Ok(Parser::new(token_data, true))
+        Ok(Parser::new(token_data, true).collect::<Vec<_>>())
     }
 }
 
-fn get_checker(code: &str, checker: &mut Checker) -> Result<Program, String> {
-    let parser = get_parser(code)?;
+fn get_ast(code: &str) -> Result<Program, String> {
     let mut error = None;
-    let program = parser
+    let program = parse(code)?
+        .into_iter()
         .filter_map(|result| match result {
             Ok(stmt) => Some(stmt),
             Err(err) => {
@@ -50,32 +51,40 @@ fn get_checker(code: &str, checker: &mut Checker) -> Result<Program, String> {
                 None
             }
         })
-        .collect::<Vec<Stmt>>();
+        .collect::<Program>();
 
     if let Some(err) = error {
         Err(err)
     } else {
-        Ok(checker
-            .check(&program)
-            .map_err(|err| format!("Checker error: {}", err))?)
+        Ok(program)
     }
 }
 
-fn get_evaluator(
-    code: &str,
-    checker: &mut Checker,
-    evaluator: &mut Evaluator,
-) -> Result<Object, String> {
+fn get_checked_ast(code: &str, checker: &mut Checker) -> Result<Program, String> {
+    Ok(checker
+        .check(&get_ast(code)?)
+        .map_err(|err| format!("Checker error: {}", err))?)
+}
+
+fn eval(code: &str, checker: &mut Checker, evaluator: &mut Evaluator) -> Result<Object, String> {
     evaluator
-        .eval(&get_checker(code, checker)?)
+        .eval(&get_checked_ast(code, checker)?)
         .map_err(|err| format!("Evaluator error: {}", err))
+}
+
+fn unsafe_eval(code: &str, evaluator: &mut Evaluator) -> Result<Object, String> {
+    Ok(evaluator
+        .eval(&get_ast(code)?)
+        .map_err(|err| format!("Evaluator error: {}", err))?)
 }
 
 fn main() {
     println!("Welcome to the Mihama programming language REPL!");
     println!("Input '.read <file>' to parse from a file");
     println!("Input '.exit' to exit the REPL");
-    println!("Input '.switch <\"lexer\"|\"parser\"|\"evaluator\">' to switch the REPL mode, default is parser");
+    println!(
+        "Input '.switch <\"l\"|\"p\"|\"c\"|\"e\"|\"u\">' to switch the REPL mode, default is parser"
+    );
 
     let mut input = String::new();
     let mut mode = ReplMode::Evaluator;
@@ -101,21 +110,25 @@ fn main() {
 
         if input.starts_with(".switch") {
             mode = match input.split_whitespace().last().unwrap() {
-                "lexer" => {
+                "l" => {
                     println!("Switched to lexer mode");
                     ReplMode::Lexer
                 }
-                "parser" => {
+                "p" => {
                     println!("Switched to parser mode");
                     ReplMode::Parser
                 }
-                "checker" => {
+                "c" => {
                     println!("Switched to checker mode");
                     ReplMode::Checker
                 }
-                "evaluator" => {
+                "e" => {
                     println!("Switched to evaluator mode");
                     ReplMode::Evaluator
+                }
+                "u" => {
+                    println!("Switched to unsafe evaluator mode");
+                    ReplMode::UnsafeEvaluator
                 }
                 _ => {
                     println!("Invalid mode");
@@ -159,7 +172,7 @@ fn main() {
                     }
                 }
             }
-            ReplMode::Parser => match get_parser(&code) {
+            ReplMode::Parser => match parse(&code) {
                 Ok(parser) => {
                     for stmt in parser {
                         match stmt {
@@ -170,7 +183,7 @@ fn main() {
                 }
                 Err(err) => println!("Parser error: {}", err),
             },
-            ReplMode::Checker => match get_checker(&code, &mut checker) {
+            ReplMode::Checker => match get_checked_ast(&code, &mut checker) {
                 Ok(program) => {
                     for stmt in program {
                         println!(" : {:?}", stmt)
@@ -178,7 +191,17 @@ fn main() {
                 }
                 Err(err) => println!("Checker error: {}", err),
             },
-            ReplMode::Evaluator => match get_evaluator(&code, &mut checker, &mut evaluator) {
+            ReplMode::Evaluator => match eval(&code, &mut checker, &mut evaluator) {
+                Ok(value) => {
+                    if view_type_info {
+                        println!("{} : {}", value.pretty_print(), value.type_info())
+                    } else {
+                        println!("{}", value.to_string())
+                    }
+                }
+                Err(err) => println!("{}", err),
+            },
+            ReplMode::UnsafeEvaluator => match unsafe_eval(&code, &mut evaluator) {
                 Ok(value) => {
                     if view_type_info {
                         println!("{} : {}", value.pretty_print(), value.type_info())

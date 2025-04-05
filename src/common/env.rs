@@ -11,7 +11,7 @@ pub struct Env<'a, T: Clone> {
 
 #[derive(Debug, Clone)]
 pub enum EnvError {
-    RedefinedIdentifier(String),
+    RedefinedBinding(String),
 }
 
 impl<T: Clone> PartialEq for Env<'_, T> {
@@ -37,10 +37,7 @@ impl<'a, T: Clone> Env<'a, T> {
 
     pub fn insert_bind(&mut self, name: String, value: T) -> Result<(), EnvError> {
         if self.binds.contains_key(&name) {
-            Err(EnvError::RedefinedIdentifier(format!(
-                "Identifier '{}' is already defined",
-                name
-            )))
+            Err(EnvError::RedefinedBinding(name))
         } else {
             self.binds.insert(name, value);
             Ok(())
@@ -68,18 +65,34 @@ impl<'a, T: Clone> Env<'a, T> {
 
 pub fn new_checker_env<'a>() -> CheckerEnv<'a> {
     let mut env = Env::<'_, TypeObject>::new();
-    PRIMIVE_TYPES.iter().for_each(|t| {
+    for t in PRIMIVE_TYPES.iter() {
         env.insert_bind(t.to_string(), t.clone()).unwrap();
-    });
+    }
+    env.insert_bind(
+        "print".to_string(),
+        TypeObject::Function(
+            Box::new(TypeObject::Any.into()),
+            Box::new(TypeObject::Unit.into()),
+        ),
+    )
+    .unwrap();
+    env.insert_bind(
+        "get_timestrap".to_string(),
+        TypeObject::Function(
+            Box::new(TypeObject::Unit.into()),
+            Box::new(TypeObject::Float.into()),
+        ),
+    )
+    .unwrap();
     env
 }
 
 pub fn new_evaluator_env<'a>() -> EvaluatorEnv<'a> {
     let mut env = Env::<'_, Object>::new();
-    PRIMIVE_TYPES.iter().for_each(|t| {
+    for t in PRIMIVE_TYPES.iter() {
         env.insert_bind(t.to_string(), Object::Type(t.clone()))
             .unwrap();
-    });
+    }
     env.insert_bind(
         "print".to_string(),
         Object::Function {

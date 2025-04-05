@@ -12,20 +12,18 @@ pub mod object;
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
     UndefinedVariable(String),
+    RedefinedVariable(String),
     TypeMismatch,
     UnsupportedOperator,
     ArityMismatch,
     NotCallable,
-    RedefinedIdentifier(String),
     PatternMatchFailure,
 }
 
 impl From<EnvError> for EvalError {
     fn from(error: EnvError) -> Self {
         match error {
-            EnvError::RedefinedIdentifier(name) => {
-                EvalError::RedefinedIdentifier(name)
-            }
+            EnvError::RedefinedBinding(name) => EvalError::RedefinedVariable(name),
         }
     }
 }
@@ -38,7 +36,7 @@ impl Display for EvalError {
             EvalError::UnsupportedOperator => write!(f, "Unsupported operator"),
             EvalError::ArityMismatch => write!(f, "Arity mismatch"),
             EvalError::NotCallable => write!(f, "Not callable"),
-            EvalError::RedefinedIdentifier(name) => {
+            EvalError::RedefinedVariable(name) => {
                 write!(f, "Identifier '{}' is already defined", name)
             }
             EvalError::PatternMatchFailure => write!(f, "Pattern match failed"),
@@ -92,7 +90,7 @@ impl<'a> Evaluator<'a> {
                 value,
             } => {
                 if self.env.get_bind(name).is_some() {
-                    return Err(EvalError::RedefinedIdentifier(name.clone()));
+                    return Err(EvalError::RedefinedVariable(name.clone()));
                 }
                 let result = self.eval_expr(value)?;
                 self.env.insert_bind(name.clone(), result)?;

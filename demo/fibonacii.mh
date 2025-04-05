@@ -2,7 +2,10 @@ let fibonaci = (n: Int): Int => {
   if n < 2 then 1 else fibonaci(n - 1) + fibonaci(n - 2)
 }
 
-
+let fibonaci2: Int -> Int -> Int -> Int = (n, first, second) =>
+  if n == 1 then first else
+  if n == 2 then second
+  else fibonaci(n - 1, second, first + second)
 
 let start = get_timestrap()
 print(fibonaci(5))

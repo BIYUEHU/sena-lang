@@ -23,7 +23,7 @@ pub enum TypeObject {
     },
 }
 
-pub static PRIMIVE_TYPES: [TypeObject; 7] = [
+pub static PRIMIVE_TYPES: [TypeObject; 9] = [
     TypeObject::Kind,
     TypeObject::Int,
     TypeObject::Float,
@@ -31,6 +31,8 @@ pub static PRIMIVE_TYPES: [TypeObject; 7] = [
     TypeObject::Char,
     TypeObject::Bool,
     TypeObject::Unit,
+    TypeObject::Unknown,
+    TypeObject::Any,
 ];
 
 impl Into<TypeExpr> for TypeObject {
@@ -72,6 +74,60 @@ impl Into<TypeExpr> for TypeObject {
         }
     }
 }
+
+// impl Into<TypeObject> for TypeExpr {
+//     fn into(self) -> TypeObject {
+//         match self {
+//             TypeExpr::Con(name) => match name.as_str() {
+//                 "Int" => TypeObject::Int,
+//                 "Float" => TypeObject::Float,
+//                 "String" => TypeObject::String,
+//                 "Char" => TypeObject::Char,
+//                 "Bool" => TypeObject::Bool,
+//                 "Kind" => TypeObject::Kind,
+//                 "Unit" => TypeObject::Unit,
+//                 "Unknown" => TypeObject::Unknown,
+//                 "Any" => TypeObject::Any,
+//                 _ => TypeObject::ADT {
+//                     name,
+//                     type_params: vec![],
+//                     constructors: vec![],
+//                 },
+//             },
+//             TypeExpr::App(f, args) => {
+//                 let f = f.as_ref().clone().into();
+//                 let args = args
+//                     .iter()
+//                     .map(|t| t.clone().into())
+//                     .collect::<Vec<TypeObject>>();
+//                 match f {
+//                     TypeExpr::Con(name) => match name.as_str() {
+//                         "Array" => {
+//                             // TypeObject::Array(Box::new(args[0].into()))
+//                             unimplemented!()
+//                         }
+//                         _ => TypeObject::ADT {
+//                             name,
+//                             type_params: vec![],
+//                             constructors: vec![],
+//                         },
+//                     },
+//                     TypeExpr::Var(_) => TypeObject::Unknown,
+//                     TypeExpr::Arrow(param, ret) => {
+//                         TypeObject::Function(Box::new((*param).into()), Box::new((*ret).into()))
+//                     }
+//                     TypeExpr::App(_, _) => TypeObject::Unknown,
+//                     TypeExpr::Literal(_) => TypeObject::Unknown,
+//                 }
+//             }
+//             TypeExpr::Arrow(param, ret) => {
+//                 TypeObject::Function(Box::new((*param).into()), Box::new((*ret).into()))
+//             }
+//             TypeExpr::Var(_) => TypeObject::Unknown,
+//             TypeExpr::Literal(_) => TypeObject::Unknown,
+//         }
+//     }
+// }
 
 impl Display for TypeObject {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
