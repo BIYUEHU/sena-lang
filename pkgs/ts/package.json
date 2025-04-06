@@ -1,0 +1,31 @@
+{
+  "name": "mihama",
+  "description": "A Modern Functional and Dependent Type Programming Language Base on Rust",
+  "version": "0.0.1",
+  "keywords": [
+    "functional",
+    "dependent-type",
+    "type",
+    "programming",
+    "language",
+    "type-theory",
+    "modern",
+    "programming-language",
+    "parser"
+  ],
+  "type": "module",
+  "files": [
+    "LICENSE"
+  ],
+  "author": "Arimura Sena <me@hotaru.icu>",
+  "devDependencies": {},
+  "dependencies": {},
+  "bugs": {
+    "url": "https://github.com/biyuehu/mihama/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/biyuehu/mihama.git"
+  },
+  "scripts": {}
+}

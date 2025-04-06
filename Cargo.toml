@@ -1,7 +1,22 @@
 [package]
 name = "mihama"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
-license = "BAN-CHINAMAN-USING"
+license = "GPL-3.0-or-later"
+keywords = [
+  "functional",
+  "dependent-type",
+  "type",
+  "programming",
+  "language",
+  "type-theory",
+  "modern",
+  "programming-language",
+  "parser",
+]
+readme = "README.md"
+authors = ["Arimura Sena <me@hotaru.icu>"]
+repository = "https://github.com/BIYUEHU/mihama"
+description = "A Modern Functional and Dependent Type Programming Language Base on Rust"
 
 [dependencies]
