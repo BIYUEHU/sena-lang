@@ -3,17 +3,7 @@ name = "mihama"
 version = "0.0.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
-keywords = [
-  "functional",
-  "dependent-type",
-  "type",
-  "programming",
-  "language",
-  "type-theory",
-  "modern",
-  "programming-language",
-  "parser",
-]
+keywords = ["functional", "dependent-type", "language", "type-theory", "parser"]
 readme = "README.md"
 authors = ["Arimura Sena <me@hotaru.icu>"]
 repository = "https://github.com/BIYUEHU/mihama"
