@@ -1,21 +1,18 @@
 type Nat = Z | S(Nat)
 
-let to_number = (x) => {
+let to_number = (x) =>
   match x then
-    | S(n) => {
-      1 + to_number(n)
-    }
+    | S(n) => 1 + to_number(n)
     | Z => 0
-}
+
 
 let bar = S(S(S(Z)))
 print("Result: ", bar, " <===> ", to_number(bar))
 
-let add = (x, y) => {
+let add = (x, y) =>
   match x then
     | S(n) => S(add(n, y))
     | Z => y
-}
 
 let foo = add(S(S(Z)), bar)
 print("Result: ", foo, " <===> ", to_number(foo))

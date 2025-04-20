@@ -4,6 +4,7 @@ use crate::lexer::token::Token;
 use crate::parser::ast::{Expr, Literal, Pattern, Program, Stmt, TypeExpr, TypeVariantFields};
 use crate::utils::is_uppercase_first_letter;
 use object::{Object, PrettyPrint};
+use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::time::UNIX_EPOCH;
 
@@ -44,13 +45,40 @@ impl Display for EvalError {
     }
 }
 
+pub type CustomFunc = Box<dyn Fn(Vec<Object>) -> Result<Object, EvalError>>;
+pub type CustomFuncs = HashMap<String, CustomFunc>;
+
 pub struct Evaluator<'a> {
     env: &'a mut EvaluatorEnv<'a>,
+    // TODO: improved it
+    custom_funcs: CustomFuncs,
 }
 
 impl<'a> Evaluator<'a> {
     pub fn new(env: &'a mut EvaluatorEnv<'a>) -> Self {
-        Evaluator { env }
+        let mut custom_funcs: CustomFuncs = HashMap::new();
+        custom_funcs.insert(
+            "print".to_string(),
+            Box::new(|args| {
+                println!(
+                    "{}",
+                    args.iter()
+                        .map(|arg| arg.pretty_print())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                Ok(Object::Unit)
+            }),
+        );
+        custom_funcs.insert(
+            "get_timestrap".to_string(),
+            Box::new(|_| Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64))),
+        );
+        Evaluator { env, custom_funcs }
+    }
+
+    pub fn set_custom_func(&mut self, name: String, func: CustomFunc) {
+        self.custom_funcs.insert(name, func);
     }
 
     pub fn eval(&mut self, program: &Program) -> Result<Object, EvalError> {
@@ -66,19 +94,10 @@ impl<'a> Evaluator<'a> {
         identify: &str,
         args: Vec<Object>,
     ) -> Result<Object, EvalError> {
-        match identify {
-            "print" => {
-                println!(
-                    "{}",
-                    args.iter()
-                        .map(|arg| arg.pretty_print())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-                Ok(Object::Unit)
-            }
-            "get_timestrap" => Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64)),
-            _ => Err(EvalError::UndefinedVariable(identify.to_string())),
+        if let Some(func) = self.custom_funcs.get(identify) {
+            func(args)
+        } else {
+            Err(EvalError::UndefinedVariable(identify.to_string()))
         }
     }
 

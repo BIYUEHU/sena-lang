@@ -1,12 +1,7 @@
 import { Show, Eq } from "prelude"
 import as std from "stdlib"
 
-// Data type definitions
-// type Bool = True | False
 type Nat = Z | S(Nat)
-// type Nat2 =
-// | Z2
-// | S2 => Nat2
 type Pair = <A, B> MkPair(A, B)
 type Maybe = <A> Just(A) | Nothing
 type Result = <A, E> Ok(A) | Err(E)

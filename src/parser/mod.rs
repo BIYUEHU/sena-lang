@@ -567,6 +567,11 @@ impl Parser {
             }
         };
 
+        // TODO: move to typechecker phase
+        if params.is_empty() {
+            return Err(self.error_invalid_syntax("function requires at least one parameter"));
+        }
+
         // Check for optional return type annotation (e.g., `: Int`)
         let return_type = Box::new(if self.current_token == Token::Colon {
             self.next_token();

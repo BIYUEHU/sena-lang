@@ -44,6 +44,10 @@ impl<'a, T: Clone> Env<'a, T> {
         }
     }
 
+    pub fn insert_bind_force(&mut self, name: String, value: T) {
+        self.binds.insert(name, value);
+    }
+
     pub fn get_bind(&self, name: &str) -> Option<T> {
         if let Some(bind) = self.get_own_bind(name) {
             Some(bind)
