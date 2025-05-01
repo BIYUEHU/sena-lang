@@ -268,6 +268,7 @@ impl Evaluator {
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Object::Array(values))
                 }
+                Literal::Unit => Ok(Object::Unit),
             },
             Expr::Prefix(op, sub_expr) => {
                 let val = self.eval_expr(sub_expr)?;

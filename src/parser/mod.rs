@@ -151,20 +151,23 @@ impl Parser {
         Some(match self.current_token {
             Token::Import => self.import_declaration(),
             Token::Export => self.export_declaration(),
-            Token::Let => self.let_declaration(),
+            Token::Let => {
+                let save_pos = self.save_position();
+                match self.let_declaration() {
+                    Ok(stmt) => Ok(stmt),
+                    Err(ParseError::InvalidSyntax { .. }) => {
+                        self.restore_position(save_pos);
+                        self.try_top_expression()
+                    }
+                    Err(err) => Err(err),
+                }
+            }
             Token::Type => self.type_declaration(),
             Token::Eof => return None,
             Token::LineComment(_) | Token::BlockComment(_) => {
                 return self.parse();
             }
-            _ => {
-                if self.top_expression {
-                    self.expression(Precedence::Lowest)
-                        .map(|expr| Stmt::Expr(expr))
-                } else {
-                    Err(self.error_invalid_syntax("expect a declaration"))
-                }
-            }
+            _ => self.try_top_expression(),
         })
     }
 
@@ -237,7 +240,7 @@ impl Parser {
         })
     }
 
-    fn let_declaration(&mut self) -> Result<Stmt, ParseError> {
+    fn collect_bindings(&mut self) -> Result<(String, Box<TypeExpr>), ParseError> {
         self.next_token();
         let name = match &self.current_token {
             Token::Ident(name) => name,
@@ -253,11 +256,17 @@ impl Parser {
             TypeExpr::default()
         });
 
-        self.next_token_consume(&Token::Assign, "'=' after variable name")?;
+        self.next_token_consume(&Token::Assign, "'=' after identifier name")?;
+        Ok((name, type_annotation))
+    }
+
+    fn let_declaration(&mut self) -> Result<Stmt, ParseError> {
+        let (name, type_annotation) = self.collect_bindings()?;
         self.next_token();
         let value = Box::new(self.expression(Precedence::Lowest)?);
-
-        // TODO: Let-In expression
+        if self.next_token_is(&Token::In) {
+            return Err(self.error_invalid_syntax("let declaration couldn't have 'in' clause"));
+        }
 
         Ok(Stmt::Let {
             name,
@@ -369,8 +378,18 @@ impl Parser {
         Ok(variants)
     }
 
+    fn try_top_expression(&mut self) -> Result<Stmt, ParseError> {
+        if self.top_expression {
+            self.expression(Precedence::Lowest)
+                .map(|expr| Stmt::Expr(expr))
+        } else {
+            Err(self.error_invalid_syntax("expect a declaration"))
+        }
+    }
+
     fn expression(&mut self, precedence: Precedence) -> Result<Expr, ParseError> {
         let mut left = match &self.current_token {
+            Token::Let => self.let_in_expression()?,
             Token::Ident(name) => match name.as_str() {
                 "true" => Expr::Literal(Literal::Bool(true)),
                 "false" => Expr::Literal(Literal::Bool(false)),
@@ -381,6 +400,9 @@ impl Parser {
             Token::String(value) => Expr::Literal(Literal::String(value.clone())),
             Token::Char(value) => Expr::Literal(Literal::Char(*value)),
             Token::Sub | Token::Not => self.prefix()?,
+            Token::If => self.if_expression()?,
+            Token::Match => self.match_expression()?,
+            // Token::With => self.with_expression()?,
             Token::LeftParen => {
                 let save_pos = self.save_position();
                 match self.try_function() {
@@ -391,8 +413,7 @@ impl Parser {
                     }
                 }
             }
-            Token::If => self.if_expression()?,
-            Token::Match => self.match_expression()?,
+            Token::LeftBracket => self.array_expression()?,
             Token::LeftBrace => self.block_expression()?,
             _ => return Err(self.error_unexpected_token("expression")),
         };
@@ -468,9 +489,13 @@ impl Parser {
 
     fn grouped_expression(&mut self) -> Result<Expr, ParseError> {
         self.next_token();
-        let expr = self.expression(Precedence::Lowest)?;
-        self.next_token_consume(&Token::RightParen, "')' after expression")?;
-        Ok(expr)
+        if self.current_token == Token::RightParen {
+            Ok(Expr::Literal(Literal::Unit))
+        } else {
+            let expr = self.expression(Precedence::Lowest)?;
+            self.next_token_consume(&Token::RightParen, "')' after expression")?;
+            Ok(expr)
+        }
     }
 
     fn call(&mut self, callee: Expr) -> Result<Expr, ParseError> {
@@ -480,6 +505,14 @@ impl Parser {
                 self2.expression(Precedence::Lowest)
             })?,
         })
+    }
+
+    fn array_expression(&mut self) -> Result<Expr, ParseError> {
+        Ok(Expr::Literal(Literal::Array(
+            self.items_list(Token::RightBracket, |self2| {
+                self2.expression(Precedence::Lowest)
+            })?,
+        )))
     }
 
     fn items_list<T, F: FnMut(&mut Self) -> Result<T, ParseError>>(
@@ -588,6 +621,21 @@ impl Parser {
             // Assuming Expr::Lambda has a field for return type; adjust based on actual AST
             // If not, this may need to be handled differently
             return_type,
+        })
+    }
+
+    fn let_in_expression(&mut self) -> Result<Expr, ParseError> {
+        let (name, type_annotation) = self.collect_bindings()?;
+        self.next_token();
+        let value = Box::new(self.expression(Precedence::Lowest)?);
+        self.next_token_consume(&Token::In, "'in' after let binding")?;
+        self.next_token();
+        let body = Box::new(self.expression(Precedence::Lowest)?);
+        Ok(Expr::LetIn {
+            name,
+            type_annotation,
+            value,
+            body,
         })
     }
 
@@ -700,11 +748,19 @@ impl Parser {
 
             self.next_token();
             statements.push(match &self.current_token {
-                Token::Let => self.let_declaration()?,
+                Token::Let => {
+                    let save_pos = self.save_position();
+                    match self.let_declaration() {
+                        Ok(stmt) => stmt,
+                        Err(ParseError::InvalidSyntax { .. }) => {
+                            self.restore_position(save_pos);
+                            Stmt::Expr(self.expression(Precedence::Lowest)?)
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
                 Token::Type => self.type_declaration()?,
-                _ => self
-                    .expression(Precedence::Lowest)
-                    .map(|expr| Stmt::Expr(expr))?,
+                _ => Stmt::Expr(self.expression(Precedence::Lowest)?),
             });
         }
 
@@ -1076,10 +1132,34 @@ mod tests {
         //     object: Box::new(Expr::Ident("a".to_string())),
         //     field: "b".to_string()
         // });
-        // assert_eq!("a[1]", Expr::Index {
-        //     array: Box::new(Expr::Ident("a".to_string())),
-        //     index: Box::new(Expr::Literal(Literal::Int(1)))
-        // });
+        assert_eq!(
+            parse("[1]",),
+            expr(Expr::Literal(Literal::Array(vec![Expr::Literal(
+                Literal::Int(1)
+            )])))
+        );
+        assert_eq!(
+            parse("[1,2,3,[4]]"),
+            expr(Expr::Literal(Literal::Array(vec![
+                Expr::Literal(Literal::Int(1)),
+                Expr::Literal(Literal::Int(2)),
+                Expr::Literal(Literal::Int(3)),
+                Expr::Literal(Literal::Array(vec![Expr::Literal(Literal::Int(4))])),
+            ])))
+        );
+        assert_eq!(
+            parse("let x = 1 in x + 2"),
+            expr(Expr::LetIn {
+                name: "x".to_string(),
+                type_annotation: Box::new(TypeExpr::default()),
+                value: Box::new(Expr::Literal(Literal::Int(1))),
+                body: Box::new(Expr::Infix(
+                    Token::Plus,
+                    Box::new(Expr::Ident("x".to_string())),
+                    Box::new(Expr::Literal(Literal::Int(2)))
+                ))
+            })
+        );
         assert_eq!(
             parse("if true then 1 else 2"),
             expr(Expr::If {

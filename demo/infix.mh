@@ -16,3 +16,10 @@ print("Apply infix:\n g(33 + 44) =", g(33 + 44), "\n g $ 33 + 44 =", g $ 33 + 44
 
 print("Compose infix:\n g(h(3)) =", g(h(3)), "\n (g . h)(3) =", (h . g)(3), "\n g . h $ 3 =", h . g $ 3, "\n")
 
+let foo =
+  let x = 10 in
+  let y = 20 in
+  let z = 30 in
+  x + y + z
+
+print("Let expression:\n foo =", foo, "\n")

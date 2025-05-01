@@ -1,3 +1,13 @@
+type Maybe = <A> Just(A) | Nothing
 type List = <A> Cons(A, List(A)) | Nil
 
 let intList = List(Int)
+
+let #:# = (el, list) => Cons(el, list)
+
+let get = (list, index) =>
+  match list then
+    | Cons(a, b) =>
+      if index == 0 then Just(a) else get(b, index - 1)
+    | Nil =>
+      Nothing

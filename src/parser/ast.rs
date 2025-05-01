@@ -95,7 +95,7 @@ pub enum Expr {
     },
     LetIn {
         name: String,
-        type_decl: Box<TypeExpr>,
+        type_annotation: Box<TypeExpr>,
         value: Box<Expr>,
         body: Box<Expr>,
     },
@@ -112,6 +112,7 @@ pub enum Literal {
     Float(f64),
     Bool(bool),
     Array(Vec<Expr>),
+    Unit,
 }
 
 #[derive(PartialEq, Clone, Debug)]

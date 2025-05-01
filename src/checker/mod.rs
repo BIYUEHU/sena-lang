@@ -328,12 +328,12 @@ impl Checker {
             }
             Expr::LetIn {
                 name,
-                type_decl,
+                type_annotation,
                 value,
                 body,
             } => {
                 let inferred_type = self.infer(value)?;
-                let decl_type = self.resolve(type_decl)?;
+                let decl_type = self.resolve(type_annotation)?;
                 let final_type = self.unify(&decl_type, &inferred_type, name)?;
                 let local_env = CheckerEnv::extend(Rc::clone(&self.env));
                 local_env
@@ -345,7 +345,7 @@ impl Checker {
                 // std::mem::swap(&mut self.env, &mut local_env);
                 Ok(Expr::LetIn {
                     name: name.clone(),
-                    type_decl: Box::new(final_type.clone().into()),
+                    type_annotation: Box::new(final_type.clone().into()),
                     value: Box::new(self.check_expr(value, &final_type)?),
                     body: Box::new(checked_body),
                 })
@@ -486,12 +486,12 @@ impl Checker {
             }
             Expr::LetIn {
                 name,
-                type_decl,
+                type_annotation,
                 value,
                 body,
             } => {
                 let inferred_type = self.infer(value)?;
-                let decl_type = self.resolve(type_decl)?;
+                let decl_type = self.resolve(type_annotation)?;
                 let final_type = self.unify(&decl_type, &inferred_type, name)?;
                 let local_env = CheckerEnv::extend(Rc::clone(&self.env));
                 local_env
