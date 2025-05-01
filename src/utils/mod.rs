@@ -113,3 +113,24 @@ pub fn unsafe_eval_code(code: &str, evaluator: &mut Evaluator) -> Result<Object,
         .eval(&get_ast(code)?)
         .map_err(|err| format!("Evaluator error: {}", err))?)
 }
+
+pub fn is_op_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '+' | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '='
+            | '<'
+            | '>'
+            | '!'
+            | '&'
+            | '|'
+            | '^'
+            | ':'
+            | '$'
+            | '?'
+            | '.'
+    )
+}

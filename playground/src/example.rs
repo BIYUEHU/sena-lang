@@ -19,7 +19,7 @@ let fibonaci: Int -> Int = (n) => {
 }
 
 let start = get_timestrap()
-print(fibonaci(23))
+print(fibonaci(7))
 print(get_timestrap() - start)
 "#;
 

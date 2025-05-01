@@ -398,13 +398,14 @@ impl Parser {
         };
 
         while !self.next_token_is(&Token::Eof)
-            && precedence < Precedence::from_token(&self.next_token)
+            && precedence <= Precedence::from_token(&self.next_token)
         {
-            match self.next_token {
+            match self.next_token.clone() {
                 Token::Plus
                 | Token::Sub
                 | Token::Mul
                 | Token::Div
+                | Token::Pow
                 | Token::Mod
                 | Token::Equal
                 | Token::NotEqual
@@ -412,9 +413,14 @@ impl Parser {
                 | Token::GreaterEqual
                 | Token::Less
                 | Token::LessEqual
+                | Token::Dollar
                 | Token::And
                 | Token::Or
-                | Token::ThinArrow => {
+                | Token::ThinArrow
+                | Token::Dot
+                | Token::Colon
+                | Token::InfixFixity(_)
+                | Token::InfixIdent(_) => {
                     self.next_token();
                     left = self.infix(left)?;
                 }
@@ -449,23 +455,7 @@ impl Parser {
     }
 
     fn infix(&mut self, left: Expr) -> Result<Expr, ParseError> {
-        let infix = match self.current_token {
-            Token::Plus => Token::Plus,
-            Token::Sub => Token::Sub,
-            Token::Mul => Token::Mul,
-            Token::Div => Token::Div,
-            Token::Mod => Token::Mod,
-            Token::Equal => Token::Equal,
-            Token::NotEqual => Token::NotEqual,
-            Token::Greater => Token::Greater,
-            Token::GreaterEqual => Token::GreaterEqual,
-            Token::Less => Token::Less,
-            Token::LessEqual => Token::LessEqual,
-            Token::And => Token::And,
-            Token::Or => Token::Or,
-            Token::ThinArrow => Token::ThinArrow,
-            _ => return Err(self.error_unexpected_token("infix operator")),
-        };
+        let infix = self.current_token.clone();
 
         let precedence = Precedence::from_token(&self.current_token);
         self.next_token();
@@ -742,7 +732,7 @@ mod tests {
     fn parse(input: &str) -> Vec<Stmt> {
         Parser::new(
             Lexer::new(input).filter_map(|result| result.ok()).collect(),
-            false,
+            true,
         )
         .filter_map(|result| {
             result
@@ -752,17 +742,6 @@ mod tests {
                 .ok()
         })
         .collect()
-    }
-
-    fn expr(input: &str, expected: Expr) {
-        assert_eq!(
-            parse(format!("let _ = {}", input).as_str()),
-            vec![Stmt::Let {
-                name: "_".to_string(),
-                type_annotation: Box::new(TypeExpr::default()),
-                value: Box::new(expected),
-            }]
-        );
     }
 
     #[test]
@@ -916,11 +895,15 @@ mod tests {
         );
     }
 
+    fn expr(expr: Expr) -> Vec<Stmt> {
+        vec![Stmt::Expr(expr)]
+    }
+
     #[test]
     fn test_function_expressions() {
-        expr(
-            "(x, y) => x + y",
-            Expr::Function {
+        assert_eq!(
+            parse("(x, y) => x + y"),
+            expr(Expr::Function {
                 type_params: vec![],
                 params: vec![
                     ("x".to_string(), Box::new(TypeExpr::default())),
@@ -932,12 +915,12 @@ mod tests {
                     Box::new(Expr::Ident("y".to_string())),
                 )),
                 return_type: Box::new(TypeExpr::default()),
-            },
+            }),
         );
 
-        expr(
-            "(x: Int, y: Int) => x + y",
-            Expr::Function {
+        assert_eq!(
+            parse("(x: Int, y: Int) => x + y"),
+            expr(Expr::Function {
                 type_params: vec![],
                 params: vec![
                     ("x".to_string(), Box::new(TypeExpr::Con("Int".to_string()))),
@@ -949,13 +932,13 @@ mod tests {
                     Box::new(Expr::Ident("y".to_string())),
                 )),
                 return_type: Box::new(TypeExpr::default()),
-            },
+            }),
         );
 
         // Lambda with return type
-        expr(
-            "(x, y): Int => x + y",
-            Expr::Function {
+        assert_eq!(
+            parse("(x, y): Int => x + y"),
+            expr(Expr::Function {
                 type_params: vec![],
                 params: vec![
                     ("x".to_string(), Box::new(TypeExpr::default())),
@@ -967,34 +950,34 @@ mod tests {
                     Box::new(Expr::Ident("y".to_string())),
                 )),
                 return_type: Box::new(TypeExpr::Con("Int".to_string())),
-            },
+            }),
         );
 
-        expr(
-            "(x) => x",
-            Expr::Function {
+        assert_eq!(
+            parse("(x) => x"),
+            expr(Expr::Function {
                 type_params: vec![],
                 params: vec![("x".to_string(), Box::new(TypeExpr::default()))],
                 body: Box::new(Expr::Ident("x".to_string())),
                 return_type: Box::new(TypeExpr::default()),
-            },
+            }),
         );
     }
 
     #[test]
     fn test_expression() {
-        expr("1", Expr::Literal(Literal::Int(1)));
-        expr(
-            "1 + 2",
-            Expr::Infix(
+        assert_eq!(parse("1"), expr(Expr::Literal(Literal::Int(1))));
+        assert_eq!(
+            parse("1 + 2"),
+            expr(Expr::Infix(
                 Token::Plus,
                 Box::new(Expr::Literal(Literal::Int(1))),
                 Box::new(Expr::Literal(Literal::Int(2))),
-            ),
+            )),
         );
-        expr(
-            "1 + 2 * 3",
-            Expr::Infix(
+        assert_eq!(
+            parse("1 + 2 * 3"),
+            expr(Expr::Infix(
                 Token::Plus,
                 Box::new(Expr::Literal(Literal::Int(1))),
                 Box::new(Expr::Infix(
@@ -1002,85 +985,112 @@ mod tests {
                     Box::new(Expr::Literal(Literal::Int(2))),
                     Box::new(Expr::Literal(Literal::Int(3))),
                 )),
-            ),
+            )),
         );
-        expr(
-            "1 + 2 * 3 - 4 / 5",
-            Expr::Infix(
-                Token::Sub,
+        assert_eq!(
+            parse("1 + 2 * 3 - 4 / 5"),
+            expr(Expr::Infix(
+                Token::Plus,
+                Box::new(Expr::Literal(Literal::Int(1))),
                 Box::new(Expr::Infix(
-                    Token::Plus,
-                    Box::new(Expr::Literal(Literal::Int(1))),
+                    Token::Sub,
                     Box::new(Expr::Infix(
                         Token::Mul,
                         Box::new(Expr::Literal(Literal::Int(2))),
                         Box::new(Expr::Literal(Literal::Int(3))),
                     )),
+                    Box::new(Expr::Infix(
+                        Token::Div,
+                        Box::new(Expr::Literal(Literal::Int(4))),
+                        Box::new(Expr::Literal(Literal::Int(5))),
+                    ))
                 )),
-                Box::new(Expr::Infix(
-                    Token::Div,
-                    Box::new(Expr::Literal(Literal::Int(4))),
-                    Box::new(Expr::Literal(Literal::Int(5))),
-                )),
-            ),
+            )),
         );
-        expr(
-            "a -> (a -> b) -> b",
-            Expr::Infix(
+        assert_eq!(
+            parse("a -> (a -> b) -> b"),
+            expr(Expr::Infix(
                 Token::ThinArrow,
+                Box::new(Expr::Ident("a".to_string())),
                 Box::new(Expr::Infix(
                     Token::ThinArrow,
-                    Box::new(Expr::Ident("a".to_string())),
                     Box::new(Expr::Infix(
                         Token::ThinArrow,
                         Box::new(Expr::Ident("a".to_string())),
                         Box::new(Expr::Ident("b".to_string())),
                     )),
+                    Box::new(Expr::Ident("b".to_string())),
                 )),
-                Box::new(Expr::Ident("b".to_string())),
-            ),
+            )),
         );
-        expr(
-            "!a",
-            Expr::Prefix(Token::Not, Box::new(Expr::Ident("a".to_string()))),
+        assert_eq!(
+            parse("!a"),
+            expr(Expr::Prefix(
+                Token::Not,
+                Box::new(Expr::Ident("a".to_string()))
+            )),
         );
-        expr(
-            "a()",
-            Expr::Call {
+        assert_eq!(
+            parse("a()"),
+            expr(Expr::Call {
                 callee: Box::new(Expr::Ident("a".to_string())),
                 arguments: vec![],
-            },
+            }),
         );
-        expr(
-            "a(1, 2, 3)",
-            Expr::Call {
+        assert_eq!(
+            parse("1 `xxx` 2 . 3 $ 4 <*> 5 ==> 6"),
+            expr(Expr::Infix(
+                Token::InfixIdent("xxx".to_string()),
+                Box::new(Expr::Literal(Literal::Int(1))),
+                Box::new(Expr::Infix(
+                    Token::Dollar,
+                    Box::new(Expr::Infix(
+                        Token::Dot,
+                        Box::new(Expr::Literal(Literal::Int(2))),
+                        Box::new(Expr::Literal(Literal::Int(3))),
+                    )),
+                    Box::new(Expr::Infix(
+                        Token::InfixFixity(vec![Token::Less, Token::Mul, Token::Greater]),
+                        Box::new(Expr::Literal(Literal::Int(4))),
+                        Box::new(Expr::Infix(
+                            Token::InfixFixity(vec![Token::Equal, Token::Greater]),
+                            Box::new(Expr::Literal(Literal::Int(5))),
+                            Box::new(Expr::Literal(Literal::Int(6))),
+                        ))
+                    ))
+                ),)
+            ),)
+        );
+        assert_eq!(
+            parse("a(1, 2, 3)"),
+            expr(Expr::Call {
                 callee: Box::new(Expr::Ident("a".to_string())),
                 arguments: vec![
                     Expr::Literal(Literal::Int(1)),
                     Expr::Literal(Literal::Int(2)),
                     Expr::Literal(Literal::Int(3)),
                 ],
-            },
+            }),
         );
-        // expr("a.b", Expr::Field {
+        // assert_eq!("a.b", Expr::Field {
         //     object: Box::new(Expr::Ident("a".to_string())),
         //     field: "b".to_string()
         // });
-        // expr("a[1]", Expr::Index {
+        // assert_eq!("a[1]", Expr::Index {
         //     array: Box::new(Expr::Ident("a".to_string())),
         //     index: Box::new(Expr::Literal(Literal::Int(1)))
         // });
-        expr(
-            "if true then 1 else 2",
-            Expr::If {
+        assert_eq!(
+            parse("if true then 1 else 2"),
+            expr(Expr::If {
                 condition: Box::new(Expr::Literal(Literal::Bool(true))),
                 then_branch: Box::new(Expr::Literal(Literal::Int(1))),
                 else_branch: Box::new(Expr::Literal(Literal::Int(2))),
-            },
+            }),
         );
-        expr(
-            "match x then | 0 => 1 | x if x > 0 => 1 | _ => 2",
-            Expr::Match {
+        assert_eq!(
+            parse("match x then | 0 => 1 | x if x > 0 => 1 | _ => 2"),
+            expr(Expr::Match {
                 expr: Box::new(Expr::Ident("x".to_string())),
                 cases: vec![
                     MatchCase {
@@ -1103,15 +1113,17 @@ mod tests {
                         guard: Box::new(Expr::Literal(Literal::Bool(true))),
                     },
                 ],
-            },
+            }),
         );
-        expr(
-            r#"{
-            let x = 1
-            print(x)
-            x + 2
-        }"#,
-            Expr::Block(vec![
+        assert_eq!(
+            parse(
+                r#"{
+                let x = 1
+                print(x)
+                x + 2
+            }"#
+            ),
+            expr(Expr::Block(vec![
                 Stmt::Let {
                     name: "x".to_string(),
                     type_annotation: Box::new(TypeExpr::default()),
@@ -1126,7 +1138,7 @@ mod tests {
                     Box::new(Expr::Ident("x".to_string())),
                     Box::new(Expr::Literal(Literal::Int(2))),
                 )),
-            ]),
+            ])),
         );
     }
 }

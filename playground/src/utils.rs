@@ -14,10 +14,8 @@ use mihama::{
 use crate::example::{DEMO_CODE, FIBONACII_CODE, MATCH_CODE};
 
 pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result<String, String> {
-    let mut env = new_evaluator_env();
-    let mut env2 = new_checker_env();
-    let mut evaluator = Evaluator::new(&mut env);
-    let mut checker = Checker::new(&mut env2);
+    let mut evaluator = Evaluator::new(new_evaluator_env());
+    let mut checker = Checker::new(new_checker_env());
     let mut result = String::new();
     let stdout = Rc::new(RefCell::new(String::new()));
     let stdout2 = Rc::clone(&stdout);

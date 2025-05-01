@@ -1,0 +1,18 @@
+let f: Int -> Int -> Int = (x, y) => x + (y + 1)
+
+let g: Int -> Int = (x) => x * 2
+
+let #-=# = f
+
+print("Custom infix:\n f(2, 3) =", f(2, 3), "\n 2 `f` 3 =", 2 `f` 3, "\n 2 -= 3 =", 2 -= 3, "\n")
+
+let #$# = (f, x) => f(x)
+
+let #.# = (g, f) => (x) => f(g(x))
+
+let h: Int -> Int = (x) => x ^ 3
+
+print("Apply infix:\n g(33 + 44) =", g(33 + 44), "\n g $ 33 + 44 =", g $ 33 + 44, "\n")
+
+print("Compose infix:\n g(h(3)) =", g(h(3)), "\n (g . h)(3) =", (h . g)(3), "\n g . h $ 3 =", h . g $ 3, "\n")
+

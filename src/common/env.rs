@@ -1,11 +1,13 @@
 use crate::checker::object::{TypeObject, PRIMIVE_TYPES};
 use crate::evaluator::object::Object;
 use crate::parser::ast::Expr;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
-pub struct Env<'a, T: Clone> {
-    pub parent: Option<&'a Env<'a, T>>,
+pub struct Env<T: Clone> {
+    pub parent: Option<Rc<RefCell<Env<T>>>>,
     pub binds: HashMap<String, T>,
 }
 
@@ -14,13 +16,22 @@ pub enum EnvError {
     RedefinedBinding(String),
 }
 
-impl<T: Clone> PartialEq for Env<'_, T> {
+impl<T: Clone> PartialEq for Env<T> {
     fn eq(&self, _: &Self) -> bool {
         false
     }
 }
 
-impl<'a, T: Clone> Env<'a, T> {
+impl<T: Clone> From<HashMap<String, T>> for Env<T> {
+    fn from(binds: HashMap<String, T>) -> Self {
+        Env {
+            parent: None,
+            binds,
+        }
+    }
+}
+
+impl<T: Clone> Env<T> {
     pub fn new() -> Self {
         Env {
             parent: None,
@@ -28,11 +39,11 @@ impl<'a, T: Clone> Env<'a, T> {
         }
     }
 
-    pub fn extend(parent: &'a Env<'a, T>) -> Env<'a, T> {
-        Env {
+    pub fn extend(parent: Rc<RefCell<Env<T>>>) -> Rc<RefCell<Env<T>>> {
+        Rc::new(RefCell::new(Env {
             parent: Some(parent),
             binds: HashMap::new(),
-        }
+        }))
     }
 
     pub fn insert_bind(&mut self, name: String, value: T) -> Result<(), EnvError> {
@@ -52,7 +63,7 @@ impl<'a, T: Clone> Env<'a, T> {
         if let Some(bind) = self.get_own_bind(name) {
             Some(bind)
         } else if let Some(ref parent) = self.parent {
-            parent.get_bind(name)
+            parent.borrow().get_bind(name)
         } else {
             None
         }
@@ -67,8 +78,10 @@ impl<'a, T: Clone> Env<'a, T> {
     }
 }
 
-pub fn new_checker_env<'a>() -> CheckerEnv<'a> {
-    let mut env = Env::<'_, TypeObject>::new();
+pub fn new_checker_env() -> Rc<RefCell<CheckerEnv>> {
+    let env_origin = Rc::new(RefCell::new(Env::new()));
+    let env = Rc::clone(&env_origin);
+    let mut env = env.borrow_mut();
     for t in PRIMIVE_TYPES.iter() {
         env.insert_bind(t.to_string(), t.clone()).unwrap();
     }
@@ -88,11 +101,13 @@ pub fn new_checker_env<'a>() -> CheckerEnv<'a> {
         ),
     )
     .unwrap();
-    env
+    env_origin
 }
 
-pub fn new_evaluator_env<'a>() -> EvaluatorEnv<'a> {
-    let mut env = Env::<'_, Object>::new();
+pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
+    let env_origin = Rc::new(RefCell::new(Env::new()));
+    let env = Rc::clone(&env_origin);
+    let mut env = env.borrow_mut();
     for t in PRIMIVE_TYPES.iter() {
         env.insert_bind(t.to_string(), Object::Type(t.clone()))
             .unwrap();
@@ -102,8 +117,9 @@ pub fn new_evaluator_env<'a>() -> EvaluatorEnv<'a> {
         Object::Function {
             type_params: vec![],
             params: vec![("...args".to_string(), Box::new(TypeObject::Any.into()))],
-            body: Box::new(Expr::Ident("print".to_string())),
+            body: Box::new(Expr::Internal("print".to_string())),
             return_type: Box::new(TypeObject::Unit.into()),
+            env: Rc::clone(&env_origin),
         },
     )
     .unwrap();
@@ -112,13 +128,14 @@ pub fn new_evaluator_env<'a>() -> EvaluatorEnv<'a> {
         Object::Function {
             type_params: vec![],
             params: vec![],
-            body: Box::new(Expr::Ident("get_timestrap".to_string())),
+            body: Box::new(Expr::Internal("get_timestrap".to_string())),
             return_type: Box::new(TypeObject::Float.into()),
+            env: Rc::clone(&env_origin),
         },
     )
     .unwrap();
-    env
+    env_origin
 }
 
-pub type CheckerEnv<'a> = Env<'a, TypeObject>;
-pub type EvaluatorEnv<'a> = Env<'a, Object>;
+pub type CheckerEnv = Env<TypeObject>;
+pub type EvaluatorEnv = Env<Object>;

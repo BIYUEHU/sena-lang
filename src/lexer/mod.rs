@@ -4,6 +4,8 @@ pub mod token;
 
 use token::{Token, TokenData};
 
+use crate::utils::is_op_char;
+
 #[derive(Debug)]
 pub enum LexerError {
     UnexpectedCharacter {
@@ -48,6 +50,7 @@ pub struct Lexer<'a> {
     pos: usize,
     next_pos: usize,
     ch: char,
+    next_ch: char,
     line: usize,
     column: usize,
 }
@@ -59,6 +62,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             next_pos: 0,
             ch: '\0',
+            next_ch: '\0',
             line: 1,
             column: 0,
         };
@@ -89,6 +93,11 @@ impl<'a> Lexer<'a> {
         }
         self.pos = self.next_pos;
         self.next_pos += 1;
+        self.next_ch = if self.next_pos >= self.input.len() {
+            '\0'
+        } else {
+            self.input.as_bytes()[self.next_pos] as char
+        };
     }
 
     fn nextch_is(&mut self, ch: char) -> bool {
@@ -112,26 +121,8 @@ impl<'a> Lexer<'a> {
             '[' => Token::LeftBracket,
             ']' => Token::RightBracket,
             ',' => Token::Comma,
-            '.' => Token::Dot,
             ';' => Token::Semicolon,
-            ':' => Token::Colon,
-            '+' => Token::Plus,
-            '-' => {
-                if self.nextch_is('>') {
-                    self.read_char();
-                    Token::ThinArrow
-                } else {
-                    Token::Sub
-                }
-            }
-            '*' => {
-                if self.nextch_is('*') {
-                    self.read_char();
-                    Token::Pow
-                } else {
-                    Token::Mul
-                }
-            }
+
             '/' => {
                 if self.nextch_is('/') {
                     self.scan_line_comment()
@@ -147,65 +138,10 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 } else {
-                    Token::Div
+                    self.scan_fixity()
                 }
             }
-            '%' => Token::Mod,
-            '=' => {
-                if self.nextch_is('=') {
-                    self.read_char();
-                    Token::Equal
-                } else if self.nextch_is('>') {
-                    self.read_char();
-                    Token::Arrow
-                } else {
-                    Token::Assign
-                }
-            }
-            '!' => {
-                if self.nextch_is('=') {
-                    self.read_char();
-                    Token::NotEqual
-                } else {
-                    Token::Not
-                }
-            }
-            '>' => {
-                if self.nextch_is('=') {
-                    self.read_char();
-                    Token::GreaterEqual
-                } else {
-                    Token::Greater
-                }
-            }
-            '<' => {
-                if self.nextch_is('=') {
-                    self.read_char();
-                    Token::LessEqual
-                } else {
-                    Token::Less
-                }
-            }
-            '&' => {
-                if self.nextch_is('&') {
-                    self.read_char();
-                    Token::And
-                } else {
-                    return Some(Err(LexerError::UnexpectedCharacter {
-                        ch: '&',
-                        line: self.line - 1,
-                        column: start_column,
-                    }));
-                }
-            }
-            '|' => {
-                if self.nextch_is('|') {
-                    self.read_char();
-                    Token::Or
-                } else {
-                    Token::Arm
-                }
-            }
+            ch if is_op_char(ch) => self.scan_fixity(),
             ch if ch.is_alphabetic() || ch == '_' => self.scan_identifier(),
             '0'..='9' => match self.scan_number() {
                 Some(token_kind) => token_kind,
@@ -217,11 +153,39 @@ impl<'a> Lexer<'a> {
                     }))
                 }
             },
+            '`' => {
+                self.read_char();
+                if self.ch == '`' {
+                    self.read_char();
+                    Token::InfixIdent("`".to_string())
+                } else {
+                    let mut op = String::new();
+                    loop {
+                        op.push(self.ch);
+                        self.read_char();
+                        if self.ch == '`' {
+                            self.read_char();
+                            break;
+                        }
+                    }
+                    Token::InfixIdent(op)
+                }
+            }
             '"' => match self.scan_string() {
                 Some(token) => token,
                 None => {
                     return Some(Err(LexerError::InvalidSyntax {
                         message: "invalid string".to_string(),
+                        line: self.line,
+                        column: start_column,
+                    }))
+                }
+            },
+            '#' => match self.scan_origin_identifier() {
+                Some(token) => token,
+                None => {
+                    return Some(Err(LexerError::InvalidSyntax {
+                        message: "invalid identifier".to_string(),
                         line: self.line,
                         column: start_column,
                     }))
@@ -254,6 +218,69 @@ impl<'a> Lexer<'a> {
             line: start_line,
             column: start_column,
         }))
+    }
+
+    fn scan_fixity(&mut self) -> Token {
+        let mut chars = vec![self.ch];
+
+        while is_op_char(self.next_ch) {
+            chars.push(self.next_ch);
+            self.read_char();
+        }
+
+        let mut tokens = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if i + 1 < chars.len() {
+                let pair = format!("{}{}", chars[i], chars[i + 1]);
+                let two_tok = match pair.as_str() {
+                    "==" => Some(Token::Equal),
+                    "!=" => Some(Token::NotEqual),
+                    ">=" => Some(Token::GreaterEqual),
+                    "<=" => Some(Token::LessEqual),
+                    "&&" => Some(Token::And),
+                    "||" => Some(Token::Or),
+                    "->" => Some(Token::ThinArrow),
+                    "=>" => Some(Token::Arrow),
+                    _ => None,
+                };
+                if let Some(tok) = two_tok {
+                    tokens.push(tok);
+                    i += 2;
+                    continue;
+                }
+            }
+
+            let one = chars[i];
+            let tok = match one {
+                '+' => Token::Plus,
+                '-' => Token::Sub,
+                '*' => Token::Mul,
+                '/' => Token::Div,
+                '%' => Token::Mod,
+                '^' => Token::Pow,
+                '=' => Token::Assign,
+                '>' => Token::Greater,
+                '<' => Token::Less,
+                '!' => Token::Not,
+                '|' => Token::Arm,
+                '$' => Token::Dollar,
+                ':' => Token::Colon,
+                '.' => Token::Dot,
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            tokens.push(tok);
+            i += 1;
+        }
+
+        if tokens.len() == 1 {
+            tokens.into_iter().next().unwrap()
+        } else {
+            Token::InfixFixity(tokens)
+        }
     }
 
     fn scan_identifier(&mut self) -> Token {
@@ -339,6 +366,19 @@ impl<'a> Lexer<'a> {
             '\'' => '\'',
             _ => return None,
         })
+    }
+
+    fn scan_origin_identifier(&mut self) -> Option<Token> {
+        let mut str = String::new();
+
+        loop {
+            self.read_char();
+            match self.ch {
+                '#' => return Some(Token::Ident(str)),
+                '\0' => return None,
+                ch => str.push(ch),
+            }
+        }
     }
 
     fn scan_string(&mut self) -> Option<Token> {
@@ -443,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_single_char_tokens() {
-        let tokens = lex("(){}[];,.:+-* / **%");
+        let tokens = lex("() {} [] ; , . : + - * / ^ % ==> <*>");
         assert_eq!(
             tokens,
             vec![
@@ -462,14 +502,16 @@ mod tests {
                 Mul,
                 Div,
                 Pow,
-                Mod
+                Mod,
+                InfixFixity(vec![Equal, Greater]),
+                InfixFixity(vec![Less, Mul, Greater]),
             ]
         );
     }
 
     #[test]
     fn test_operators() {
-        let tokens = lex("= == ! != > >= < <= => -> && ||");
+        let tokens = lex("= == ! != > >= < <= => -> && || `compose` `apply`");
         assert_eq!(
             tokens,
             vec![
@@ -484,7 +526,9 @@ mod tests {
                 Arrow,
                 ThinArrow,
                 And,
-                Or
+                Or,
+                InfixIdent("compose".to_string()),
+                InfixIdent("apply".to_string())
             ]
         );
     }
@@ -656,12 +700,12 @@ mod tests {
 
     #[test]
     fn test_let_declaration() {
-        let tokens = lex(r#"let x: int = 1 + 2 * 3"#);
+        let tokens = lex(r#"let #!x#: int = 1 + 2 * 3"#);
         assert_eq!(
             tokens,
             vec![
                 Let,
-                Ident("x".to_string()),
+                Ident("!x".to_string()),
                 Colon,
                 Ident("int".to_string()),
                 Assign,

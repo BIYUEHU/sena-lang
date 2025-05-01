@@ -4,7 +4,9 @@ use crate::parser::ast::{
     Expr, Literal, MatchCase, Pattern, Program, Stmt, TypeExpr, TypeVariantFields,
 };
 use object::TypeObject;
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 pub mod object;
 
@@ -72,13 +74,13 @@ impl fmt::Display for TypeError {
     }
 }
 
-pub struct Checker<'a> {
-    env: &'a mut CheckerEnv<'a>,
+pub struct Checker {
+    env: Rc<RefCell<CheckerEnv>>,
     // type_vars: HashMap<String, TypeObject>,
 }
 
-impl<'a> Checker<'a> {
-    pub fn new(env: &'a mut CheckerEnv<'a>) -> Self {
+impl Checker {
+    pub fn new(env: Rc<RefCell<CheckerEnv>>) -> Self {
         Checker {
             env,
             // type_vars: HashMap::new(),
@@ -105,6 +107,7 @@ impl<'a> Checker<'a> {
                 let annotation_type = self.resolve(type_annotation)?;
                 let final_type = self.unify(&annotation_type, &inferred_type, name)?;
                 self.env
+                    .borrow_mut()
                     .insert_bind(name.clone(), final_type.clone())
                     .map_err(|_| TypeError::RedefinedVariable(name.clone()))?;
                 Ok(Stmt::Let {
@@ -128,6 +131,7 @@ impl<'a> Checker<'a> {
                         .collect(),
                 };
                 self.env
+                    .borrow_mut()
                     .insert_bind(name.clone(), adt_type.clone())
                     .map_err(|_| TypeError::RedefinedVariable(name.clone()))?;
                 Ok(Stmt::Type {
@@ -157,9 +161,10 @@ impl<'a> Checker<'a> {
 
     fn check_expr(&mut self, expr: &Expr, expected: &TypeObject) -> Result<Expr, TypeError> {
         match expr {
-            Expr::Ident(name) => {
+            Expr::Ident(name) | Expr::Internal(name) => {
                 let var_type = self
                     .env
+                    .borrow()
                     .get_bind(name)
                     .ok_or(TypeError::UndefinedVariable(name.clone()))?;
                 self.unify(expected, &var_type, name)?;
@@ -246,11 +251,13 @@ impl<'a> Checker<'a> {
             } => {
                 let t = self.infer(&expr)?;
 
-                let mut local_env = CheckerEnv::extend(self.env);
+                let local_env = CheckerEnv::extend(Rc::clone(&self.env));
                 for (name, ty) in params.iter().rev() {
-                    local_env.insert_bind(name.clone(), self.resolve(ty)?)?;
+                    local_env
+                        .borrow_mut()
+                        .insert_bind(name.clone(), self.resolve(ty)?)?;
                 }
-                let mut checker = Checker::new(&mut local_env);
+                let mut checker = Checker::new(local_env);
                 let body_type = checker.infer(body)?;
                 let return_type =
                     self.unify(&self.resolve(return_type)?, &body_type, "function body")?;
@@ -328,8 +335,9 @@ impl<'a> Checker<'a> {
                 let inferred_type = self.infer(value)?;
                 let decl_type = self.resolve(type_decl)?;
                 let final_type = self.unify(&decl_type, &inferred_type, name)?;
-                let mut local_env = CheckerEnv::extend(&self.env);
+                let local_env = CheckerEnv::extend(Rc::clone(&self.env));
                 local_env
+                    .borrow_mut()
                     .insert_bind(name.clone(), final_type.clone())
                     .map_err(|_| TypeError::RedefinedVariable(name.clone()))?;
                 // std::mem::swap(&mut self.env, &mut local_env);
@@ -362,8 +370,9 @@ impl<'a> Checker<'a> {
 
     fn infer(&mut self, expr: &Expr) -> Result<TypeObject, TypeError> {
         match expr {
-            Expr::Ident(name) => self
+            Expr::Ident(name) | Expr::Internal(name) => self
                 .env
+                .borrow()
                 .get_bind(name)
                 .ok_or(TypeError::UndefinedVariable(name.clone())),
             Expr::Literal(lit) => self.infer_literal(lit),
@@ -420,11 +429,13 @@ impl<'a> Checker<'a> {
                 return_type,
                 ..
             } => {
-                let mut local_env = CheckerEnv::extend(self.env);
+                let local_env = CheckerEnv::extend(Rc::clone(&self.env));
                 for (name, ty) in params.iter().rev() {
-                    local_env.insert_bind(name.clone(), self.resolve(ty)?)?;
+                    local_env
+                        .borrow_mut()
+                        .insert_bind(name.clone(), self.resolve(ty)?)?;
                 }
-                let mut checker = Checker::new(&mut local_env);
+                let mut checker = Checker::new(local_env);
                 let return_type = self.unify(
                     &self.resolve(return_type)?,
                     &checker.infer(body)?,
@@ -482,8 +493,9 @@ impl<'a> Checker<'a> {
                 let inferred_type = self.infer(value)?;
                 let decl_type = self.resolve(type_decl)?;
                 let final_type = self.unify(&decl_type, &inferred_type, name)?;
-                let mut local_env = CheckerEnv::extend(self.env);
+                let local_env = CheckerEnv::extend(Rc::clone(&self.env));
                 local_env
+                    .borrow_mut()
                     .insert_bind(name.clone(), final_type)
                     .map_err(|_| TypeError::RedefinedVariable(name.clone()))?;
                 // std::mem::swap(&mut self.env, &mut local_env);
@@ -581,11 +593,16 @@ impl<'a> Checker<'a> {
 
     fn infer_pattern(&self, pattern: &Pattern) -> Result<TypeObject, TypeError> {
         match pattern {
-            Pattern::Ident(name) => Ok(self.env.get_bind(name).unwrap_or(TypeObject::Unknown)),
+            Pattern::Ident(name) => Ok(self
+                .env
+                .borrow()
+                .get_bind(name)
+                .unwrap_or(TypeObject::Unknown)),
             Pattern::Literal(lit) => self.infer_literal(lit),
             Pattern::ADTConstructor { name, args } => {
                 let adt_type = self
                     .env
+                    .borrow()
                     .get_bind(name)
                     .ok_or(TypeError::UndefinedVariable(name.clone()))?;
                 if let TypeObject::ADT {
@@ -635,6 +652,7 @@ impl<'a> Checker<'a> {
             TypeExpr::Var(name) | TypeExpr::Con(name) => self
                 // .type_vars
                 .env
+                .borrow()
                 .get_bind(name)
                 // .cloned()
                 .ok_or(TypeError::UndefinedVariable(name.clone())),

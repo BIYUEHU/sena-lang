@@ -17,11 +17,10 @@ fn main() {
     );
 
     let mut input = String::new();
-    let mut mode = RunningMode::Evaluator;
+    let mut mode = RunningMode::UnsafeEvaluator;
     let mut env = new_evaluator_env();
-    let mut env2 = new_checker_env();
-    let mut evaluator = Evaluator::new(&mut env);
-    let mut checker = Checker::new(&mut env2);
+    let mut evaluator = Evaluator::new(env);
+    let mut checker = Checker::new(new_checker_env());
 
     loop {
         print!("{}", PROMPT);
@@ -70,14 +69,14 @@ fn main() {
 
         if input.starts_with(".clear") {
             env = new_evaluator_env();
-            evaluator = Evaluator::new(&mut env);
+            evaluator = Evaluator::new(env);
             continue;
         }
 
         let code = if input.starts_with(".read") {
             if input.starts_with(".readc") {
                 env = new_evaluator_env();
-                evaluator = Evaluator::new(&mut env);
+                evaluator = Evaluator::new(env);
             }
             match std::fs::read_to_string(input.split_whitespace().last().unwrap()) {
                 Ok(code) => code,

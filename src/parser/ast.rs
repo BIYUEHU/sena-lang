@@ -101,6 +101,7 @@ pub enum Expr {
     },
     Literal(Literal),
     Block(Vec<Stmt>),
+    Internal(String),
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -143,19 +144,21 @@ pub enum Stmt {
 
 #[derive(PartialEq, PartialOrd, Debug, Clone)]
 pub enum Precedence {
-    Lowest,
-    Custom,  // . & |>...
-    Or,      // ||
-    And,     // &
-    Equal,   // == !=
-    Compare, // < <= > >=
-    Sum,     // + -
-    Product, // * / %
-    Mapping, // ->
-    Prefix,  // -X !X
-    Call,    // myFunction(x)
-    Index,   // array[index]
-    Highest, // (x)
+    Lowest,   // $ `xxx` and custom operators
+    Or,       // ||
+    And,      // &&
+    Equal,    // == !=
+    Compare,  // < <= > >=
+    List,     // : ++
+    Sum,      // + -
+    Product,  // * / %
+    Exponent, // ^
+    Mapping,  // ->
+    Compose,  // .
+    Prefix,   // -X !X
+    Call,     // myFunction(x)
+    Index,    // array[index]
+    Highest,  // (x)
 }
 
 impl Precedence {
@@ -173,8 +176,10 @@ impl Precedence {
             Token::LeftParen => Self::Call,
             Token::LeftBracket => Self::Index,
             Token::RightParen | Token::RightBracket => Self::Highest,
-            Token::Dot => Self::Custom,
-            Token::Arm => Self::Custom,
+            Token::Dot => Self::Compose,
+            Token::Colon => Self::List,
+            Token::InfixFixity(list) if *list == vec![Token::Plus, Token::Plus] => Self::List,
+            Token::Pow => Self::Exponent,
             _ => Self::Lowest,
         }
     }

@@ -38,11 +38,11 @@ let handle_score = (x: Int) =>
 
 let bar = (
     let x = 20, y = 30
-    in x + y ** 2 * 2 / 5 - 5 % 1
+    in x + y ^ 2 * 2 / 5 - 5 % 1
 )
 let bar = {
     let x = 20, y = 30
-    x + y ** 2 * 2 / 5 - 5 % 1
+    x + y ^ 2 * 2 / 5 - 5 % 1
 }
 
 // Token

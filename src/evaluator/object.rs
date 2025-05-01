@@ -1,9 +1,14 @@
 use crate::{
     checker::object::TypeObject,
+    common::env::EvaluatorEnv,
     parser::ast::{Expr, TypeExpr},
     utils::format_type_name,
 };
-use std::fmt::{self, Display, Formatter};
+use std::{
+    cell::RefCell,
+    fmt::{self, Display, Formatter},
+    rc::Rc,
+};
 
 pub trait PrettyPrint {
     fn pretty_print(&self) -> String;
@@ -26,6 +31,7 @@ pub enum Object {
         params: Vec<(String, Box<TypeExpr>)>,
         body: Box<Expr>,
         return_type: Box<TypeExpr>,
+        env: Rc<RefCell<EvaluatorEnv>>,
     },
     Type(TypeObject),
     ADT {

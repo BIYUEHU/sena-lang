@@ -2,36 +2,38 @@ use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
-    LeftParen,    // (
-    RightParen,   // )
-    LeftBrace,    // {
-    RightBrace,   // }
-    LeftBracket,  // [
-    RightBracket, // ]
-    Comma,        // ,
-    Dot,          // .
-    Semicolon,    // ;
-    Colon,        // :
-
-    Plus,         // +
-    Sub,          // -
-    Mul,          // *
-    Div,          // /
-    Pow,          // **
-    Mod,          // %
-    Assign,       // =
-    Equal,        // ==
-    Not,          // !
-    NotEqual,     // !=
-    Greater,      // >
-    GreaterEqual, // >=
-    Less,         // <
-    LessEqual,    // <=
-    Arrow,        // =>
-    ThinArrow,    // ->
-    Arm,          // |
-    And,          // &&
-    Or,           // ||
+    LeftParen,          // (
+    RightParen,         // )
+    LeftBrace,          // {
+    RightBrace,         // }
+    LeftBracket,        // [
+    RightBracket,       // ]
+    Comma,              // ,
+    Dot,                // .
+    Semicolon,          // ;
+    Colon,              // :
+    Plus,               // +
+    Sub,                // -
+    Mul,                // *
+    Div,                // /
+    Pow,                // ^
+    Mod,                // %
+    Assign,             // =
+    Equal,              // ==
+    Not,                // !
+    NotEqual,           // !=
+    Greater,            // >
+    GreaterEqual,       // >=
+    Less,               // <
+    LessEqual,          // <=
+    Arrow,              // =>
+    ThinArrow,          // ->
+    Dollar,             // $
+    Arm,                // |
+    And,                // &&
+    Or,                 // ||
+    InfixIdent(String), // `xxx`
+    InfixFixity(Vec<Token>),
 
     Ident(String),
     Float(f64),
@@ -71,12 +73,11 @@ impl Display for Token {
             Token::Dot => write!(f, "."),
             Token::Semicolon => write!(f, ";"),
             Token::Colon => write!(f, ":"),
-
             Token::Plus => write!(f, "+"),
             Token::Sub => write!(f, "-"),
             Token::Mul => write!(f, "*"),
             Token::Div => write!(f, "/"),
-            Token::Pow => write!(f, "**"),
+            Token::Pow => write!(f, "^"),
             Token::Mod => write!(f, "%"),
             Token::Assign => write!(f, "="),
             Token::Equal => write!(f, "=="),
@@ -88,9 +89,20 @@ impl Display for Token {
             Token::LessEqual => write!(f, "<="),
             Token::Arrow => write!(f, "=>"),
             Token::ThinArrow => write!(f, "->"),
+            Token::Dollar => write!(f, "$"),
             Token::Arm => write!(f, "|"),
             Token::And => write!(f, "&&"),
             Token::Or => write!(f, "||"),
+            Token::InfixIdent(s) => write!(f, "`{}`", s),
+            Token::InfixFixity(fixity) => write!(
+                f,
+                "{}",
+                fixity
+                    .iter()
+                    .map(|t| format!("{}", t))
+                    .collect::<Vec<String>>()
+                    .join("")
+            ),
 
             Token::Ident(s) => write!(f, "{}", s),
             Token::Float(n) => write!(f, "{}", n),
