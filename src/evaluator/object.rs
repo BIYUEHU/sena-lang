@@ -1,8 +1,6 @@
 use crate::{
-    checker::object::TypeObject,
-    common::env::EvaluatorEnv,
-    parser::ast::{Expr, TypeExpr},
-    utils::format_type_name,
+    checker::{ast::CheckedExpr, object::TypeObject},
+    env::EvaluatorEnv,
 };
 use std::{
     cell::RefCell,
@@ -25,32 +23,35 @@ pub enum Object {
     String(String),
     Char(char),
     Bool(bool),
-    Array(Vec<Object>),
+    Array(Vec<Object>), // TODO: add type info for array elements
     Function {
-        type_params: Vec<(String, Box<TypeExpr>)>,
-        params: Vec<(String, Box<TypeExpr>)>,
-        body: Box<Expr>,
-        return_type: Box<TypeExpr>,
+        params: Vec<String>,
+        body: CheckedExpr,
         env: Rc<RefCell<EvaluatorEnv>>,
+        type_annotation: TypeObject,
     },
-    Type(TypeObject),
-    ADT {
-        type_name: String,
-        type_params: Vec<Box<TypeExpr>>,
+    ADTValue {
         variant: String,
         fields: Vec<Object>,
+        type_annotation: TypeObject,
     },
-    ADTConstructor {
-        type_name: String,
-        type_params: Vec<Box<TypeExpr>>,
-        variant: String,
-        fields: Vec<Box<TypeExpr>>,
-    },
-    TypeConstructor {
-        type_name: String,
-        type_params: Vec<String>,
-        constructors: Vec<(String, Vec<TypeExpr>)>,
-    },
+    Type(TypeObject),
+    /*? TypeFn {
+        param: String,
+        kind: TypeObject,
+        body: Box<TypeExpr>,
+    }, */ //?
+    // ADTConstructor {
+    //     type_name: String,
+    //     type_params: Vec<TypeExpr>,
+    //     variant: String,
+    //     fields: Vec<TypeExpr>,
+    // },
+    // TypeConstructor {
+    //     type_name: String,
+    //     type_params: Vec<String>,
+    //     constructors: Vec<(String, Vec<TypeExpr>)>,
+    // },
     Unit,
 }
 
@@ -70,45 +71,45 @@ impl Display for Object {
                 write!(f, "Function({})", self.type_info())
             }
             Object::Type(t) => write!(f, "Kind({})", t),
-            Object::ADT {
-                type_name,
-                type_params,
+            Object::ADTValue {
                 variant,
                 fields,
+                type_annotation,
             } => {
                 if fields.is_empty() {
-                    write!(
-                        f,
-                        "ADT({}::{})",
-                        format_type_name(type_name.clone(), type_params.clone()),
-                        variant
-                    )
+                    write!(f, "ADT({}::{})", type_annotation, variant)
                 } else {
                     let fs: Vec<String> = fields.iter().map(|o| o.to_string()).collect();
-                    write!(f, "ADT({}::{}({}))", type_name, variant, fs.join(", "))
+                    write!(
+                        f,
+                        "ADT({}::{}({}))",
+                        type_annotation,
+                        variant,
+                        fs.join(", ")
+                    )
                 }
             }
-            Object::ADTConstructor {
-                type_name,
-                type_params,
-                variant,
-                fields,
-            } => {
-                write!(
-                    f,
-                    "ADTConstructor({}::{}({}))",
-                    format_type_name(type_name.clone(), type_params.clone()),
-                    variant,
-                    fields
-                        .iter()
-                        .map(|t| (**t).to_string())
-                        .collect::<Vec<String>>()
-                        .join(", ")
-                )
-            }
-            Object::TypeConstructor { .. } => {
-                write!(f, "TypeConstructor({})", self.type_info())
-            }
+            // Object::ADTConstructor {
+            //     type_name,
+            //     type_params,
+            //     variant,
+            //     fields,
+            // } => {
+            //     write!(
+            //         f,
+            //         "ADTConstructor({}::{}({}))",
+            //         format_type_name(type_name.clone(), type_params.clone()),
+            //         variant,
+            //         fields
+            //             .iter()
+            //             .map(|t| (**t).to_string())
+            //             .collect::<Vec<String>>()
+            //             .join(", ")
+            //     )
+            // }
+            // Object::TypeConstructor { .. } => {
+            //     write!(f, "TypeConstructor({})", self.type_info())
+            // }
             Object::Unit => write!(f, "()"),
         }
     }
@@ -128,19 +129,17 @@ impl PrettyPrint for Object {
             }
             Object::Function { .. } => "<function>".to_string(),
             Object::Type(t) => t.to_string(),
-            Object::ADT {
-                type_name,
-                type_params,
+            Object::ADTValue {
                 variant,
                 fields,
+                type_annotation,
             } => {
-                let type_name = format_type_name(type_name.clone(), type_params.clone());
                 if fields.is_empty() {
-                    format!("{}::{}", type_name, variant)
+                    format!("{}::{}", type_annotation, variant)
                 } else {
                     format!(
                         "{}::{}({})",
-                        type_name,
+                        type_annotation,
                         variant,
                         fields
                             .iter()
@@ -150,8 +149,8 @@ impl PrettyPrint for Object {
                     )
                 }
             }
-            Object::ADTConstructor { .. } => "<adt_constructor>".to_string(),
-            Object::TypeConstructor { .. } => "<type_constructor>".to_string(),
+            // Object::ADTConstructor { .. } => "<adt_constructor>".to_string(),
+            // Object::TypeConstructor { .. } => "<type_constructor>".to_string(),
             Object::Unit => "()".to_string(),
         }
     }
@@ -174,64 +173,33 @@ impl TypeInfo for Object {
                 }
             }
             Object::Function {
-                type_params,
-                params,
-                return_type,
-                ..
-            } => {
-                let type_params = type_params
-                    .iter()
-                    .map(|(n, t)| format!("{}: {}", n, t))
-                    .collect::<Vec<String>>()
-                    .join(", ");
-                let params = if params.is_empty() {
-                    "Unit".to_string()
-                } else {
-                    params
-                        .iter()
-                        .map(|(_, t)| {
-                            if matches!(**t, TypeExpr::Arrow(..)) {
-                                format!("({})", t)
-                            } else {
-                                t.to_string()
-                            }
-                        })
-                        .collect::<Vec<String>>()
-                        .join(" -> ")
-                };
-                if type_params.is_empty() {
-                    format!("{} -> {}", params, return_type)
-                } else {
-                    format!("<{}> {} -> {}", type_params, params, return_type)
-                }
-            }
-            Object::ADT {
-                type_name,
-                type_params,
-                ..
-            } => format_type_name(type_name.clone(), type_params.clone()),
-            Object::ADTConstructor {
-                type_name,
-                type_params,
-                fields,
-                ..
-            } => format!(
-                "{} -> {}",
-                fields
-                    .iter()
-                    .map(|_| "Kind")
-                    .collect::<Vec<_>>()
-                    .join(" -> "),
-                format_type_name(type_name.clone(), type_params.clone()),
-            ),
-            Object::TypeConstructor { type_params, .. } => format!(
-                "{} -> Kind",
-                type_params
-                    .iter()
-                    .map(|_| "Kind")
-                    .collect::<Vec<_>>()
-                    .join(" -> "),
-            ),
+                type_annotation, ..
+            } => type_annotation.to_string(),
+            Object::ADTValue {
+                type_annotation, ..
+            } => type_annotation.to_string(),
+            // Object::ADTConstructor {
+            //     type_name,
+            //     type_params,
+            //     fields,
+            //     ..
+            // } => format!(
+            //     "{} -> {}",
+            //     fields
+            //         .iter()
+            //         .map(|_| "Kind")
+            //         .collect::<Vec<_>>()
+            //         .join(" -> "),
+            //     format_type_name(type_name.clone(), type_params.clone()),
+            // ),
+            // Object::TypeConstructor { type_params, .. } => format!(
+            //     "{} -> Kind",
+            //     type_params
+            //         .iter()
+            //         .map(|_| "Kind")
+            //         .collect::<Vec<_>>()
+            //         .join(" -> "),
+            // ),
             Object::Unit => "Unit".to_string(),
         }
     }

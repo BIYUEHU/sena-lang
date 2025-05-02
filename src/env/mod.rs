@@ -1,19 +1,17 @@
+use crate::checker::ast::CheckedExpr;
 use crate::checker::object::{TypeObject, PRIMIVE_TYPES};
 use crate::evaluator::object::Object;
-use crate::parser::ast::Expr;
+use error::EnvError;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+pub mod error;
 
 #[derive(Debug, Clone)]
 pub struct Env<T: Clone> {
     pub parent: Option<Rc<RefCell<Env<T>>>>,
     pub binds: HashMap<String, T>,
-}
-
-#[derive(Debug, Clone)]
-pub enum EnvError {
-    RedefinedBinding(String),
 }
 
 impl<T: Clone> PartialEq for Env<T> {
@@ -115,10 +113,15 @@ pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
     env.insert_bind(
         "print".to_string(),
         Object::Function {
-            type_params: vec![],
-            params: vec![("...args".to_string(), Box::new(TypeObject::Any.into()))],
-            body: Box::new(Expr::Internal("print".to_string())),
-            return_type: Box::new(TypeObject::Unit.into()),
+            params: vec!["...args".to_string()],
+            body: CheckedExpr::Internal {
+                value: "print".to_string(),
+                type_annotation: TypeObject::Unit,
+            },
+            type_annotation: TypeObject::Function(
+                Box::new(TypeObject::Any),
+                Box::new(TypeObject::Unit),
+            ),
             env: Rc::clone(&env_origin),
         },
     )
@@ -126,10 +129,15 @@ pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
     env.insert_bind(
         "get_timestrap".to_string(),
         Object::Function {
-            type_params: vec![],
             params: vec![],
-            body: Box::new(Expr::Internal("get_timestrap".to_string())),
-            return_type: Box::new(TypeObject::Float.into()),
+            body: CheckedExpr::Internal {
+                value: "get_timestrap".to_string(),
+                type_annotation: TypeObject::Float,
+            },
+            type_annotation: TypeObject::Function(
+                Box::new(TypeObject::Unit),
+                Box::new(TypeObject::Float),
+            ),
             env: Rc::clone(&env_origin),
         },
     )

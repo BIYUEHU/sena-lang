@@ -1,8 +1,6 @@
 use core::fmt;
 use std::fmt::{Display, Formatter};
 
-use crate::parser::ast::TypeExpr;
-
 #[derive(Clone, PartialEq, Debug)]
 pub enum TypeObject {
     Kind,
@@ -14,13 +12,18 @@ pub enum TypeObject {
     Unit,
     Unknown,
     Any,
-    // Array(Box<TypeObject>),
     Function(Box<TypeObject>, Box<TypeObject>),
-    ADT {
+    ADTDef {
         name: String,
         type_params: Vec<String>,
-        constructors: Vec<(String, Vec<TypeExpr>)>,
+        constructors: Vec<(String, TypeObject)>,
     },
+    ADTInst {
+        name: String,
+        params: Vec<TypeObject>,
+    },
+    Forall(Vec<(String, TypeObject)>, Box<TypeObject>), // System F, Rank-n
+    Lambda((String, Box<TypeObject>), Box<TypeObject>), // ?
 }
 
 pub static PRIMIVE_TYPES: [TypeObject; 9] = [
@@ -35,45 +38,45 @@ pub static PRIMIVE_TYPES: [TypeObject; 9] = [
     TypeObject::Any,
 ];
 
-impl Into<TypeExpr> for TypeObject {
-    fn into(self) -> TypeExpr {
-        match self {
-            TypeObject::Int
-            | TypeObject::Float
-            | TypeObject::String
-            | TypeObject::Char
-            | TypeObject::Bool
-            | TypeObject::Kind
-            | TypeObject::Unit
-            | TypeObject::Unknown
-            | TypeObject::Any => TypeExpr::Con(self.to_string()),
-            // TypeObject::Array(t) => {
-            //     TypeExpr::App(Box::new(TypeExpr::Con("Array".to_string())), vec![t.into()])
-            // }
-            TypeObject::Function(param, ret) => TypeExpr::Arrow(
-                Box::new(param.as_ref().clone().into()),
-                Box::new(ret.as_ref().clone().into()),
-            ),
-            TypeObject::ADT {
-                name,
-                type_params,
-                constructors,
-            } => {
-                let mut args = vec![];
-                for (_, ts) in constructors {
-                    args.extend(ts.iter().cloned());
-                }
-                TypeExpr::App(
-                    Box::new(TypeExpr::Con(name)),
-                    type_params
-                        .iter()
-                        .map(|s| TypeExpr::Var(s.clone()))
-                        .collect(),
-                )
-            }
-        }
-    }
-}
+// impl Into<TypeExpr> for TypeObject {
+//     fn into(self) -> TypeExpr {
+//         match self {
+//             TypeObject::Int
+//             | TypeObject::Float
+//             | TypeObject::String
+//             | TypeObject::Char
+//             | TypeObject::Bool
+//             | TypeObject::Kind
+//             | TypeObject::Unit
+//             | TypeObject::Unknown
+//             | TypeObject::Any => TypeExpr::Con(self.to_string()),
+//             // TypeObject::Array(t) => {
+//             //     TypeExpr::App(Box::new(TypeExpr::Con("Array".to_string())), vec![t.into()])
+//             // }
+//             TypeObject::Function(param, ret) => TypeExpr::Arrow(
+//                 Box::new(param.as_ref().clone().into()),
+//                 Box::new(ret.as_ref().clone().into()),
+//             ),
+//             TypeObject::ADT {
+//                 name,
+//                 type_params,
+//                 constructors,
+//             } => {
+//                 let mut args = vec![];
+//                 for (_, ts) in constructors {
+//                     args.extend(ts.iter().cloned());
+//                 }
+//                 TypeExpr::App(
+//                     Box::new(TypeExpr::Con(name)),
+//                     type_params
+//                         .iter()
+//                         .map(|s| TypeExpr::Var(s.clone()))
+//                         .collect(),
+//                 )
+//             }
+//         }
+//     }
+// }
 
 // impl Into<TypeObject> for TypeExpr {
 //     fn into(self) -> TypeObject {
@@ -149,7 +152,37 @@ impl Display for TypeObject {
                     write!(f, "{} -> {}", param, ret)
                 }
             }
-            TypeObject::ADT { name, .. } => write!(f, "{}", name),
+            TypeObject::ADTDef { name, .. } => write!(f, "{}", name),
+            TypeObject::ADTInst { name, params } => {
+                write!(
+                    f,
+                    "{}<{}>",
+                    name,
+                    params
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            TypeObject::Forall(vars, body) => {
+                write!(
+                    f,
+                    "forall {}. {}", // TODO: here copyed from haskell
+                    vars.iter()
+                        .map(|(v, t)| format!("{}: {}", v, t))
+                        .collect::<Vec<String>>()
+                        .join(", "),
+                    body
+                )
+            }
+            TypeObject::Lambda((_var, param), ret) => {
+                if matches!(**param, TypeObject::Function(_, _)) {
+                    write!(f, "({}) -> {}", param, ret)
+                } else {
+                    write!(f, "{} -> {}", param, ret)
+                }
+            }
         }
     }
 }

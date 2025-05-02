@@ -1,15 +1,40 @@
+use crate::lexer::token::Token;
 use core::fmt;
 use std::fmt::{Display, Formatter};
 
-use crate::lexer::token::Token;
+#[derive(PartialEq, Clone, Debug)]
+pub enum Kind {
+    Star,
+    Arrow(Box<Kind>, Box<Kind>),
+}
+
+impl Display for Kind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Kind::Star => write!(f, "*"),
+            Kind::Arrow(t1, t2) => {
+                if matches!(**t2, Kind::Arrow(..)) {
+                    write!(f, "({}) -> {}", t1, t2)
+                } else {
+                    write!(f, "{} -> {}", t1, t2)
+                }
+            }
+        }
+    }
+}
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum TypeExpr {
     Var(String),
     Con(String),
-    App(Box<TypeExpr>, Vec<TypeExpr>),
+    App(Box<TypeExpr>, Vec<TypeExpr>), // Vec -> Box
     Arrow(Box<TypeExpr>, Box<TypeExpr>),
+    Forall(Vec<(String, TypeExpr)>, Box<TypeExpr>),
+    // DepFn(String, Box<TypeExpr>, Box<TypeExpr>),
+    Lambda((String, Box<TypeExpr>), Box<TypeExpr>),
+    // Constraint(String, Vec<TypeExpr>),
     Literal(Literal),
+    Kind(Kind),
 }
 
 impl Default for TypeExpr {
@@ -21,13 +46,14 @@ impl Default for TypeExpr {
 impl TryFrom<Expr> for TypeExpr {
     type Error = ();
 
+    // TODO: here is used to convert to type expressions from value expressions, that's need to be improved
     fn try_from(expr: Expr) -> Result<Self, ()> {
         match expr {
             Expr::Ident(name) => Ok(TypeExpr::Con(name)),
             Expr::Literal(literal) => Ok(TypeExpr::Literal(literal)),
-            Expr::Call { callee, arguments } => Ok(TypeExpr::App(
+            Expr::Call { callee, params } => Ok(TypeExpr::App(
                 Box::new(TypeExpr::try_from(*callee)?),
-                arguments
+                params
                     .into_iter()
                     .map(|arg| TypeExpr::try_from(arg))
                     .collect::<Result<Vec<_>, _>>()?,
@@ -65,6 +91,21 @@ impl Display for TypeExpr {
                 }
             }
             TypeExpr::Literal(l) => write!(f, "Literal({:?})", l),
+            TypeExpr::Forall(vs, t) => {
+                write!(
+                    f,
+                    "forall {}. {}", // TODO
+                    vs.iter()
+                        .map(|(v, t)| format!("{}: {}", v, t))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    t
+                )
+            }
+            TypeExpr::Lambda((v, t1), t2) => {
+                write!(f, "({} -> {}) -> {}", t1, t2, v)
+            }
+            TypeExpr::Kind(k) => write!(f, "{}", k),
         }
     }
 }
@@ -76,13 +117,12 @@ pub enum Expr {
     Infix(Token, Box<Expr>, Box<Expr>),
     Call {
         callee: Box<Expr>,
-        arguments: Vec<Expr>,
+        params: Vec<Expr>,
     },
     Function {
-        type_params: Vec<(String, Box<TypeExpr>)>,
-        params: Vec<(String, Box<TypeExpr>)>,
+        params: Vec<String>,
         body: Box<Expr>,
-        return_type: Box<TypeExpr>,
+        type_annotation: TypeExpr,
     },
     If {
         condition: Box<Expr>,
@@ -95,7 +135,7 @@ pub enum Expr {
     },
     LetIn {
         name: String,
-        type_annotation: Box<TypeExpr>,
+        type_annotation: TypeExpr,
         value: Box<Expr>,
         body: Box<Expr>,
     },
@@ -119,12 +159,12 @@ pub enum Literal {
 pub enum Stmt {
     Let {
         name: String,
-        type_annotation: Box<TypeExpr>,
+        type_annotation: TypeExpr,
         value: Box<Expr>,
     },
     Type {
         name: String,
-        type_annotation: Box<TypeExpr>,
+        type_annotation: TypeExpr,
         type_params: Option<Vec<String>>,
         variants: Vec<TypeVariant>,
     },
@@ -143,56 +183,13 @@ pub enum Stmt {
     Expr(Expr),
 }
 
-#[derive(PartialEq, PartialOrd, Debug, Clone)]
-pub enum Precedence {
-    Lowest,   // $ `xxx` and custom operators
-    Or,       // ||
-    And,      // &&
-    Equal,    // == !=
-    Compare,  // < <= > >=
-    List,     // : ++
-    Sum,      // + -
-    Product,  // * / %
-    Exponent, // ^
-    Mapping,  // ->
-    Compose,  // .
-    Prefix,   // -X !X
-    Call,     // myFunction(x)
-    Index,    // array[index]
-    Highest,  // (x)
-}
-
-impl Precedence {
-    pub fn from_token(token: &Token) -> Self {
-        match token {
-            Token::Plus | Token::Sub => Self::Sum,
-            Token::Mul | Token::Div | Token::Mod => Self::Product,
-            Token::Equal | Token::NotEqual => Self::Equal,
-            Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual => Self::Compare,
-            Token::Or => Self::Or,
-            Token::And => Self::And,
-            Token::ThinArrow => Self::Mapping,
-            Token::Arrow => Self::Lowest,
-            Token::Not => Self::Prefix,
-            Token::LeftParen => Self::Call,
-            Token::LeftBracket => Self::Index,
-            Token::RightParen | Token::RightBracket => Self::Highest,
-            Token::Dot => Self::Compose,
-            Token::Colon => Self::List,
-            Token::InfixFixity(list) if *list == vec![Token::Plus, Token::Plus] => Self::List,
-            Token::Pow => Self::Exponent,
-            _ => Self::Lowest,
-        }
-    }
-}
-
-pub type Program = Vec<Stmt>;
+pub type UnsafeProgram = Vec<Stmt>;
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct MatchCase {
     pub pattern: Pattern,
-    pub body: Box<Expr>,
-    pub guard: Box<Expr>,
+    pub body: Expr,
+    pub guard: Expr,
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -210,7 +207,7 @@ pub struct TypeVariant {
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum TypeVariantFields {
-    Tuple(Vec<Box<TypeExpr>>),
-    Record(Vec<(String, Box<TypeExpr>)>),
+    Tuple(Vec<TypeExpr>),
+    Record(Vec<(String, TypeExpr)>),
     Unit,
 }

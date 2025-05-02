@@ -1,5 +1,5 @@
 use mihama::checker::Checker;
-use mihama::common::env::{new_checker_env, new_evaluator_env};
+use mihama::env::env::{new_checker_env, new_evaluator_env};
 use mihama::evaluator::object::{PrettyPrint, TypeInfo};
 use mihama::evaluator::Evaluator;
 use mihama::lexer::Lexer;

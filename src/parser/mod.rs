@@ -1,57 +1,14 @@
-use crate::lexer::token::{Token, TokenData};
-use ast::{
-    Expr, Literal, MatchCase, Pattern, Precedence, Stmt, TypeExpr, TypeVariant, TypeVariantFields,
+use crate::{
+    lexer::token::{Token, TokenData},
+    utils::get_arrow_type,
 };
-use std::fmt::{self, Display, Formatter};
+use ast::{Expr, Literal, MatchCase, Pattern, Stmt, TypeExpr, TypeVariant, TypeVariantFields};
+use error::ParseError;
+use precedence::Precedence;
 
 pub mod ast;
-
-#[derive(Debug)]
-pub enum ParseError {
-    UnexpectedToken {
-        expected: String,
-        found: Token,
-        line: usize,
-        column: usize,
-    },
-    EndOfInput {
-        expected: String,
-    },
-    InvalidSyntax {
-        message: String,
-        line: usize,
-        column: usize,
-    },
-}
-
-impl Display for ParseError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            ParseError::UnexpectedToken {
-                expected,
-                found,
-                line,
-                column,
-            } => write!(
-                f,
-                "Unexpected token: expect {}, found '{}' at line {}, column {}",
-                expected, found, line, column
-            ),
-            ParseError::EndOfInput { expected } => {
-                write!(f, "Unexpected end of input: expect {}", expected)
-            }
-            ParseError::InvalidSyntax {
-                message,
-                line,
-                column,
-            } => write!(
-                f,
-                "Syntax error: {} at line {}, column {}",
-                message, line, column
-            ),
-        }
-    }
-}
+pub mod error;
+pub mod precedence;
 
 #[derive(Clone)]
 pub struct Parser {
@@ -240,7 +197,7 @@ impl Parser {
         })
     }
 
-    fn collect_bindings(&mut self) -> Result<(String, Box<TypeExpr>), ParseError> {
+    fn collect_bindings(&mut self) -> Result<(String, TypeExpr), ParseError> {
         self.next_token();
         let name = match &self.current_token {
             Token::Ident(name) => name,
@@ -248,13 +205,13 @@ impl Parser {
         }
         .clone();
 
-        let type_annotation = Box::new(if self.next_token_is(&Token::Colon) {
+        let type_annotation = if self.next_token_is(&Token::Colon) {
             self.next_token();
             self.next_token();
             self.type_expression()?
         } else {
             TypeExpr::default()
-        });
+        };
 
         self.next_token_consume(&Token::Assign, "'=' after identifier name")?;
         Ok((name, type_annotation))
@@ -282,13 +239,13 @@ impl Parser {
             _ => return Err(self.error_unexpected_token("identifier")),
         };
 
-        let type_annotation = Box::new(if self.next_token_is(&Token::Colon) {
+        let type_annotation = if self.next_token_is(&Token::Colon) {
             self.next_token();
             self.next_token();
             self.type_expression()?
         } else {
             TypeExpr::Con("Unknown".into())
-        });
+        };
 
         self.next_token_consume(&Token::Assign, "'=' after type name")?;
         let type_params = if self.next_token_is(&Token::Less) {
@@ -324,11 +281,7 @@ impl Parser {
 
             let fields = if self.next_token_is(&Token::LeftParen) {
                 self.next_token();
-                let exprs = self
-                    .items_list(Token::RightParen, |self2| self2.type_expression())?
-                    .into_iter()
-                    .map(|x| Box::new(x))
-                    .collect::<Vec<_>>();
+                let exprs = self.items_list(Token::RightParen, |self2| self2.type_expression())?;
                 if exprs.is_empty() {
                     return Err(self.error_invalid_syntax("tuple type requires at least one field"));
                 }
@@ -501,7 +454,7 @@ impl Parser {
     fn call(&mut self, callee: Expr) -> Result<Expr, ParseError> {
         Ok(Expr::Call {
             callee: Box::new(callee),
-            arguments: self.items_list(Token::RightParen, |self2| {
+            params: self.items_list(Token::RightParen, |self2| {
                 self2.expression(Precedence::Lowest)
             })?,
         })
@@ -596,31 +549,41 @@ impl Parser {
         }
 
         // Check for optional return type annotation (e.g., `: Int`)
-        let return_type = Box::new(if self.current_token == Token::Colon {
+        let return_type = if self.current_token == Token::Colon {
             self.next_token();
             let type_expr = self.type_expression()?;
             self.next_token();
             type_expr
         } else {
             TypeExpr::default()
-        });
+        };
 
-        // Expect '=>'
         if self.current_token != Token::Arrow {
             return Err(self.error_unexpected_token("'=>'"));
         }
-        self.next_token(); // Consume '=>'
+        self.next_token();
 
-        // Parse the Lambda body
         let body = Box::new(self.expression(Precedence::Lowest)?);
+        /*
+        [Int, String, Int]
 
+        Int -> String -> Int
+        -> (Int, -> (String -> Int))
+        */
         Ok(Expr::Function {
-            type_params: vec![], // Assuming no generic type parameters for now
-            params,
+            params: params
+                .clone()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
             body,
-            // Assuming Expr::Lambda has a field for return type; adjust based on actual AST
-            // If not, this may need to be handled differently
-            return_type,
+            type_annotation: get_arrow_type(
+                params
+                    .into_iter()
+                    .map(|(_, type_annotation)| *type_annotation)
+                    .collect(),
+                return_type,
+            ),
         })
     }
 
@@ -666,16 +629,15 @@ impl Parser {
             let guard = if self.next_token_is(&Token::If) {
                 self.next_token();
                 self.next_token();
-                Box::new(self.expression(Precedence::Lowest)?)
+                self.expression(Precedence::Lowest)?
             } else {
-                Box::new(Expr::Literal(Literal::Bool(true)))
+                Expr::Literal(Literal::Bool(true))
             };
             self.next_token_consume(&Token::Arrow, "'=>' after pattern")?;
             self.next_token();
-            let body = Box::new(self.expression(Precedence::Lowest)?);
             cases.push(MatchCase {
                 pattern,
-                body,
+                body: self.expression(Precedence::Lowest)?,
                 guard,
             });
         }
@@ -806,7 +768,7 @@ mod tests {
             parse("let x = 1"),
             vec![Stmt::Let {
                 name: "x".to_string(),
-                type_annotation: Box::new(TypeExpr::default()),
+                type_annotation: TypeExpr::default(),
                 value: Box::new(Expr::Literal(Literal::Int(1))),
             }]
         );
@@ -814,7 +776,7 @@ mod tests {
             parse("let x: int = 1"),
             vec![Stmt::Let {
                 name: "x".to_string(),
-                type_annotation: Box::new(TypeExpr::Con("int".to_string())),
+                type_annotation: TypeExpr::Con("int".to_string()),
                 value: Box::new(Expr::Literal(Literal::Int(1))),
             }]
         );
@@ -826,7 +788,7 @@ mod tests {
             parse("type List = Nil | Cons(int, List)"),
             vec![Stmt::Type {
                 name: "List".to_string(),
-                type_annotation: Box::new(TypeExpr::default()),
+                type_annotation: TypeExpr::default(),
                 type_params: None,
                 variants: vec![
                     TypeVariant {
@@ -836,8 +798,8 @@ mod tests {
                     TypeVariant {
                         name: "Cons".to_string(),
                         fields: TypeVariantFields::Tuple(vec![
-                            Box::new(TypeExpr::Con("int".to_string())),
-                            Box::new(TypeExpr::Con("List".to_string())),
+                            TypeExpr::Con("int".to_string()),
+                            TypeExpr::Con("List".to_string()),
                         ]),
                     },
                 ],
@@ -848,7 +810,7 @@ mod tests {
             parse("type List = <T> Nil | Cons(T, List(T))"),
             vec![Stmt::Type {
                 name: "List".to_string(),
-                type_annotation: Box::new(TypeExpr::default()),
+                type_annotation: TypeExpr::default(),
                 type_params: Some(vec!["T".to_string()]),
                 variants: vec![
                     TypeVariant {
@@ -858,11 +820,11 @@ mod tests {
                     TypeVariant {
                         name: "Cons".to_string(),
                         fields: TypeVariantFields::Tuple(vec![
-                            Box::new(TypeExpr::Con("T".to_string())),
-                            Box::new(TypeExpr::App(
+                            TypeExpr::Con("T".to_string()),
+                            TypeExpr::App(
                                 Box::new(TypeExpr::Con("List".to_string())),
                                 vec![TypeExpr::Con("T".to_string())],
-                            )),
+                            ),
                         ]),
                     },
                 ],
@@ -873,7 +835,7 @@ mod tests {
             parse("type Color: Kind = Red | Green | Blue"),
             vec![Stmt::Type {
                 name: "Color".to_string(),
-                type_annotation: Box::new(TypeExpr::Con("Kind".to_string())),
+                type_annotation: TypeExpr::Con("Kind".to_string()),
                 type_params: None,
                 variants: vec![
                     TypeVariant {
@@ -920,7 +882,7 @@ mod tests {
                 only_abstract: false,
                 body: Box::new(Stmt::Let {
                     name: "x".to_string(),
-                    type_annotation: Box::new(TypeExpr::default()),
+                    type_annotation: TypeExpr::default(),
                     value: Box::new(Expr::Literal(Literal::Int(1))),
                 })
             }]
@@ -932,7 +894,7 @@ mod tests {
                 only_abstract: true,
                 body: Box::new(Stmt::Type {
                     name: "Nat".to_string(),
-                    type_annotation: Box::new(TypeExpr::default()),
+                    type_annotation: TypeExpr::default(),
                     type_params: None,
                     variants: vec![
                         TypeVariant {
@@ -941,9 +903,9 @@ mod tests {
                         },
                         TypeVariant {
                             name: "Succ".to_string(),
-                            fields: TypeVariantFields::Tuple(vec![Box::new(TypeExpr::Con(
+                            fields: TypeVariantFields::Tuple(vec![TypeExpr::Con(
                                 "Nat".to_string()
-                            ))]),
+                            )]),
                         }
                     ],
                 })
@@ -960,34 +922,38 @@ mod tests {
         assert_eq!(
             parse("(x, y) => x + y"),
             expr(Expr::Function {
-                type_params: vec![],
-                params: vec![
-                    ("x".to_string(), Box::new(TypeExpr::default())),
-                    ("y".to_string(), Box::new(TypeExpr::default())),
-                ],
+                params: vec!["x".to_string(), "y".to_string(),],
                 body: Box::new(Expr::Infix(
                     Token::Plus,
                     Box::new(Expr::Ident("x".to_string())),
                     Box::new(Expr::Ident("y".to_string())),
                 )),
-                return_type: Box::new(TypeExpr::default()),
+                type_annotation: TypeExpr::Arrow(
+                    Box::new(TypeExpr::default()),
+                    Box::new(TypeExpr::Arrow(
+                        Box::new(TypeExpr::default()),
+                        Box::new(TypeExpr::default())
+                    ))
+                ),
             }),
         );
 
         assert_eq!(
             parse("(x: Int, y: Int) => x + y"),
             expr(Expr::Function {
-                type_params: vec![],
-                params: vec![
-                    ("x".to_string(), Box::new(TypeExpr::Con("Int".to_string()))),
-                    ("y".to_string(), Box::new(TypeExpr::Con("Int".to_string()))),
-                ],
+                params: vec!["x".to_string(), "y".to_string(),],
                 body: Box::new(Expr::Infix(
                     Token::Plus,
                     Box::new(Expr::Ident("x".to_string())),
                     Box::new(Expr::Ident("y".to_string())),
                 )),
-                return_type: Box::new(TypeExpr::default()),
+                type_annotation: TypeExpr::Arrow(
+                    Box::new(TypeExpr::Con("Int".to_string())),
+                    Box::new(TypeExpr::Arrow(
+                        Box::new(TypeExpr::Con("Int".to_string())),
+                        Box::new(TypeExpr::Con("Int".to_string()))
+                    ))
+                )
             }),
         );
 
@@ -995,27 +961,31 @@ mod tests {
         assert_eq!(
             parse("(x, y): Int => x + y"),
             expr(Expr::Function {
-                type_params: vec![],
-                params: vec![
-                    ("x".to_string(), Box::new(TypeExpr::default())),
-                    ("y".to_string(), Box::new(TypeExpr::default())),
-                ],
+                params: vec!["x".to_string(), "y".to_string(),],
                 body: Box::new(Expr::Infix(
                     Token::Plus,
                     Box::new(Expr::Ident("x".to_string())),
                     Box::new(Expr::Ident("y".to_string())),
                 )),
-                return_type: Box::new(TypeExpr::Con("Int".to_string())),
+                type_annotation: TypeExpr::Arrow(
+                    Box::new(TypeExpr::default()),
+                    Box::new(TypeExpr::Arrow(
+                        Box::new(TypeExpr::default()),
+                        Box::new(TypeExpr::Con("Int".to_string()))
+                    ))
+                )
             }),
         );
 
         assert_eq!(
             parse("(x) => x"),
             expr(Expr::Function {
-                type_params: vec![],
-                params: vec![("x".to_string(), Box::new(TypeExpr::default()))],
+                params: vec!["x".to_string()],
                 body: Box::new(Expr::Ident("x".to_string())),
-                return_type: Box::new(TypeExpr::default()),
+                type_annotation: TypeExpr::Arrow(
+                    Box::new(TypeExpr::default()),
+                    Box::new(TypeExpr::default())
+                ),
             }),
         );
     }
@@ -1090,7 +1060,7 @@ mod tests {
             parse("a()"),
             expr(Expr::Call {
                 callee: Box::new(Expr::Ident("a".to_string())),
-                arguments: vec![],
+                params: vec![],
             }),
         );
         assert_eq!(
@@ -1121,7 +1091,7 @@ mod tests {
             parse("a(1, 2, 3)"),
             expr(Expr::Call {
                 callee: Box::new(Expr::Ident("a".to_string())),
-                arguments: vec![
+                params: vec![
                     Expr::Literal(Literal::Int(1)),
                     Expr::Literal(Literal::Int(2)),
                     Expr::Literal(Literal::Int(3)),
@@ -1151,7 +1121,7 @@ mod tests {
             parse("let x = 1 in x + 2"),
             expr(Expr::LetIn {
                 name: "x".to_string(),
-                type_annotation: Box::new(TypeExpr::default()),
+                type_annotation: TypeExpr::default(),
                 value: Box::new(Expr::Literal(Literal::Int(1))),
                 body: Box::new(Expr::Infix(
                     Token::Plus,
@@ -1175,22 +1145,22 @@ mod tests {
                 cases: vec![
                     MatchCase {
                         pattern: Pattern::Literal(Literal::Int(0)),
-                        body: Box::new(Expr::Literal(Literal::Int(1))),
-                        guard: Box::new(Expr::Literal(Literal::Bool(true))),
+                        body: Expr::Literal(Literal::Int(1)),
+                        guard: Expr::Literal(Literal::Bool(true)),
                     },
                     MatchCase {
                         pattern: Pattern::Ident("x".to_string()),
-                        body: Box::new(Expr::Literal(Literal::Int(1))),
-                        guard: Box::new(Expr::Infix(
+                        body: Expr::Literal(Literal::Int(1)),
+                        guard: Expr::Infix(
                             Token::Greater,
                             Box::new(Expr::Ident("x".to_string())),
                             Box::new(Expr::Literal(Literal::Int(0))),
-                        )),
+                        ),
                     },
                     MatchCase {
                         pattern: Pattern::Ident("_".to_string()),
-                        body: Box::new(Expr::Literal(Literal::Int(2))),
-                        guard: Box::new(Expr::Literal(Literal::Bool(true))),
+                        body: Expr::Literal(Literal::Int(2)),
+                        guard: Expr::Literal(Literal::Bool(true)),
                     },
                 ],
             }),
@@ -1206,12 +1176,12 @@ mod tests {
             expr(Expr::Block(vec![
                 Stmt::Let {
                     name: "x".to_string(),
-                    type_annotation: Box::new(TypeExpr::default()),
+                    type_annotation: TypeExpr::default(),
                     value: Box::new(Expr::Literal(Literal::Int(1))),
                 },
                 Stmt::Expr(Expr::Call {
                     callee: Box::new(Expr::Ident("print".to_string())),
-                    arguments: vec![Expr::Ident("x".to_string())],
+                    params: vec![Expr::Ident("x".to_string())],
                 }),
                 Stmt::Expr(Expr::Infix(
                     Token::Plus,

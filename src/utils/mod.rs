@@ -3,28 +3,26 @@ use crate::{
     evaluator::{object::Object, Evaluator},
     lexer::Lexer,
     parser::{
-        ast::{Program, Stmt, TypeExpr},
-        ParseError, Parser,
+        ast::{Stmt, TypeExpr, UnsafeProgram},
+        error::ParseError,
+        Parser,
     },
 };
 
 pub fn is_uppercase_first_letter(str: &str) -> bool {
     str.chars().next().map_or(false, |c| c.is_uppercase())
 }
-
-pub fn format_type_name(type_name: String, type_params: Vec<Box<TypeExpr>>) -> String {
-    if type_params.is_empty() {
-        type_name
-    } else {
-        format!(
-            "{}({})",
-            type_name,
-            type_params
-                .into_iter()
-                .map(|t| { t.to_string() })
-                .collect::<Vec<_>>()
-                .join(",")
-        )
+pub fn get_arrow_type(params: Vec<TypeExpr>, return_type: TypeExpr) -> TypeExpr {
+    match params.len() {
+        0 => TypeExpr::Arrow(
+            Box::new(TypeExpr::Con("Unit".to_string())),
+            Box::new(return_type),
+        ),
+        1 => TypeExpr::Arrow(Box::new(params[0].clone()), Box::new(return_type)),
+        _ => TypeExpr::Arrow(
+            Box::new(params[0].clone()),
+            Box::new(get_arrow_type(params[1..].to_vec(), return_type)),
+        ),
     }
 }
 
@@ -70,7 +68,7 @@ pub fn parse_code(code: &str) -> Result<Vec<Result<Stmt, ParseError>>, String> {
     }
 }
 
-pub fn get_ast(code: &str) -> Result<Program, String> {
+pub fn get_ast(code: &str) -> Result<UnsafeProgram, String> {
     let mut error = None;
     let program = parse_code(code)?
         .into_iter()
@@ -83,7 +81,7 @@ pub fn get_ast(code: &str) -> Result<Program, String> {
                 None
             }
         })
-        .collect::<Program>();
+        .collect::<UnsafeProgram>();
 
     if let Some(err) = error {
         Err(err)
@@ -92,7 +90,7 @@ pub fn get_ast(code: &str) -> Result<Program, String> {
     }
 }
 
-pub fn get_checked_ast(code: &str, checker: &mut Checker) -> Result<Program, String> {
+pub fn get_checked_ast(code: &str, checker: &mut Checker) -> Result<UnsafeProgram, String> {
     Ok(checker
         .check(&get_ast(code)?)
         .map_err(|err| format!("Checker error: {}", err))?)

@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use mihama::{
     checker::Checker,
-    common::env::{new_checker_env, new_evaluator_env},
+    env::env::{new_checker_env, new_evaluator_env},
     evaluator::{
         object::{Object, PrettyPrint, TypeInfo},
         Evaluator,
