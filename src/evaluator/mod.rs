@@ -1,9 +1,9 @@
-use crate::checker::ast::{CheckedExpr, CheckedStmt};
+use crate::checker::ast::{CheckedExpr, CheckedStmt, CheckedTypeVariantFields, Program};
 use crate::checker::object::TypeObject;
 use crate::env::{Env, EvaluatorEnv};
 use crate::lexer::token::Token;
-use crate::parser::ast::{Literal, Pattern, TypeExpr, TypeVariantFields};
-use crate::utils::is_uppercase_first_letter;
+use crate::parser::ast::{Kind, Literal, Pattern, UnsafeProgram};
+use crate::utils::{is_uppercase_first_letter, to_checked_expr, to_checked_stmt};
 use error::EvalError;
 use object::{Object, PrettyPrint};
 use std::cell::RefCell;
@@ -41,7 +41,32 @@ impl Evaluator {
         );
         custom_funcs.insert(
             "get_timestrap".to_string(),
-            Box::new(|_| Ok(Object::Int(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64))),
+            Box::new(|_| Ok((UNIX_EPOCH.elapsed().unwrap().as_millis() as i64).into())),
+        );
+        let env2 = Rc::clone(&env);
+        custom_funcs.insert(
+            "get_bind".to_string(),
+            Box::new(move |args| {
+                let name =
+                    if let Object::String(str) = args.first().ok_or(EvalError::ArityMismatch)? {
+                        str.clone()
+                    } else {
+                        return Err(EvalError::ArityMismatch);
+                    };
+                env2.borrow()
+                    .get_bind(&name)
+                    .ok_or(EvalError::UndefinedVariable(name))
+            }),
+        );
+        custom_funcs.insert(
+            "connect".to_string(),
+            Box::new(|args| {
+                Ok(args
+                    .iter()
+                    .map(|arg| arg.pretty_print())
+                    .collect::<String>()
+                    .into())
+            }),
         );
         Evaluator { env, custom_funcs }
     }
@@ -50,18 +75,59 @@ impl Evaluator {
         self.custom_funcs.insert(name, func);
     }
 
-    fn eval_internal_func(&self, identify: String, args: Vec<Object>) -> Result<Object, EvalError> {
-        if let Some(func) = self.custom_funcs.get(identify.as_str()) {
-            func(args)
+    fn eval_internal_func(
+        &self,
+        identify: String,
+        params: Vec<Object>,
+        type_annotation: TypeObject,
+    ) -> Result<Object, EvalError> {
+        if identify.starts_with("ADTVALUECONSTRUCTOR_") {
+            Ok(Object::ADTValue {
+                variant: identify
+                    .split('_')
+                    .collect::<Vec<_>>()
+                    .last()
+                    .ok_or(EvalError::UndefinedVariable(identify.to_string()))?
+                    .to_string(),
+                fields: params,
+                type_annotation,
+            })
         } else {
-            Err(EvalError::UndefinedVariable(identify.to_string()))
+            if let Some(func) = self.custom_funcs.get(identify.as_str()) {
+                func(params)
+            } else {
+                Err(EvalError::UndefinedVariable(identify.to_string()))
+            }
         }
+    }
+
+    pub fn eval(&mut self, program: &Program) -> Result<Object, EvalError> {
+        Ok(program
+            .iter()
+            .map(|stmt| self.eval_stmt(stmt))
+            .collect::<Result<Vec<_>, _>>()?
+            .last()
+            .unwrap_or(&Object::Unit)
+            .clone())
+    }
+
+    pub fn eval_unsafe(&mut self, unsafe_program: &UnsafeProgram) -> Result<Object, EvalError> {
+        Ok(unsafe_program
+            .iter()
+            .map(|stmt| self.eval_stmt(&to_checked_stmt(stmt.clone())))
+            .collect::<Result<Vec<_>, _>>()?
+            .last()
+            .unwrap_or(&Object::Unit)
+            .clone())
     }
 
     fn eval_func(&self, func: &CheckedExpr, args: Vec<Object>) -> Result<Object, EvalError> {
         match self.eval_expr(func)? {
             Object::Function {
-                params, body, env, ..
+                params,
+                body,
+                env,
+                type_annotation,
             } => {
                 let check_params = || {
                     if params.len() != args.len() {
@@ -70,15 +136,41 @@ impl Evaluator {
                         Ok(())
                     }
                 };
-                if let CheckedExpr::Internal { value, .. } = *body.into() {
-                    self.eval_internal_func(value, args)
+                if let CheckedExpr::Internal { value, .. } = body {
+                    self.eval_internal_func(value, args, type_annotation)
                 } else {
                     check_params()?;
                     let local_env = Env::extend(env);
-                    for (p, a) in params.iter().zip(args.into_iter()) {
-                        local_env.borrow_mut().insert_bind(p.0.clone(), a)?;
+                    for (name, type_annotation) in params.iter().zip(args.into_iter()) {
+                        local_env
+                            .borrow_mut()
+                            .insert_bind(name.clone(), type_annotation)?;
                     }
                     Evaluator::new(local_env).eval_expr(&body.into())
+                }
+            }
+            Object::Type {
+                value: TypeObject::ADTDef { name, params, .. },
+                ..
+            } => {
+                if params.len() == args.len() {
+                    let mut real_params = vec![];
+                    for arg in args {
+                        if let Object::Type { value, .. } = arg {
+                            real_params.push(value)
+                        } else {
+                            return Err(EvalError::TypeMismatch);
+                        }
+                    }
+                    Ok(Object::Type {
+                        value: TypeObject::ADTInst {
+                            name: name.clone(),
+                            params: real_params,
+                        },
+                        kind_annotation: Kind::Star,
+                    })
+                } else {
+                    Err(EvalError::ArityMismatch)
                 }
             }
             _ => Err(EvalError::NotCallable),
@@ -87,11 +179,7 @@ impl Evaluator {
 
     fn eval_stmt(&mut self, stmt: &CheckedStmt) -> Result<Object, EvalError> {
         match stmt {
-            CheckedStmt::Let {
-                name,
-                type_annotation: _,
-                value,
-            } => {
+            CheckedStmt::Let { name, value, .. } => {
                 if self.env.borrow().get_bind(name).is_some() {
                     return Err(EvalError::RedefinedVariable(name.clone()));
                 }
@@ -101,96 +189,77 @@ impl Evaluator {
             }
             CheckedStmt::Type {
                 name,
-                type_annotation: _,
-                type_params,
                 variants,
+                params,
+                kind_annotation,
             } => {
-                let constructors: Vec<(String, Vec<TypeExpr>)> = variants
-                    .iter()
-                    .map(|variant| {
-                        (
-                            variant.name.clone(),
-                            match &variant.fields {
-                                TypeVariantFields::Unit => vec![],
-                                TypeVariantFields::Tuple(types) => {
-                                    types.iter().map(|t| *t.clone()).collect()
-                                }
-                                TypeVariantFields::Record(fields) => {
-                                    fields.iter().map(|(_, t)| *t.clone()).collect()
-                                }
-                            },
-                        )
-                    })
-                    .collect();
-
                 let mut env = self.env.borrow_mut();
 
-                let type_params_count = match type_params {
-                    None => {
-                        env.insert_bind(
-                            name.clone(),
-                            Object::Type(TypeObject::ADT {
-                                name: name.clone(),
-                                type_params: vec![],
-                                constructors: constructors.clone(),
-                            }),
-                        )?;
-                        0
-                    }
-                    Some(type_params) => {
-                        env.insert_bind(
-                            name.clone(),
-                            Object::TypeConstructor {
-                                type_name: name.clone(),
-                                type_params: type_params.clone(),
-                                constructors: constructors.clone(),
-                            },
-                        )?;
-                        type_params.len()
-                    }
+                /* Type Constructor */
+                env.insert_bind(
+                    name.clone(),
+                    Object::Type {
+                        value: TypeObject::ADTDef {
+                            name: name.clone(),
+                            params: params.clone(),
+                            constructors: vec![],
+                        },
+                        kind_annotation: kind_annotation.clone(),
+                    },
+                )?;
+
+                // TODO: relate value constructors with params of type constructor, instead of `Unknown`
+                let adt_type_annotation = {
+                    let real_params = params
+                        .iter()
+                        .map(|_| TypeObject::Unknown)
+                        .collect::<Vec<_>>();
+                    match env
+                        .get_bind(name)
+                        .ok_or(EvalError::UndefinedVariable(name.to_string()))?
+                    {
+                        Object::Type { value: type_, .. } => match type_ {
+                            TypeObject::ADTDef { params, name, .. } => {
+                                if params.len() == real_params.len() {
+                                    Ok(TypeObject::ADTInst {
+                                        name: name.clone(),
+                                        params: real_params.clone(),
+                                    })
+                                } else {
+                                    Err(EvalError::ArityMismatch)
+                                }
+                            }
+                            _ => Err(EvalError::TypeMismatch),
+                        },
+                        _ => Err(EvalError::NotAType(name.to_string())),
+                    }?
                 };
-                let type_params = {
-                    let mut type_params = vec![];
-                    for _ in 0..type_params_count {
-                        type_params.push(Box::new(TypeObject::Kind.into()));
-                    }
-                    type_params
-                };
+
                 for variant in variants {
                     let variant_name = variant.name.clone();
-                    match &variant.fields {
-                        TypeVariantFields::Unit => {
-                            let adt_value = Object::ADT {
-                                type_name: name.clone(),
-                                type_params: type_params.clone(),
-                                variant: variant_name.clone(),
-                                fields: vec![],
-                            };
-                            env.insert_bind(variant_name.clone(), adt_value)?;
+                    let constructor = match variant.fields.clone() {
+                        CheckedTypeVariantFields::Unit => Object::ADTValue {
+                            variant: variant_name.clone(),
+                            fields: vec![],
+                            type_annotation: adt_type_annotation.clone(),
+                        },
+                        CheckedTypeVariantFields::Tuple(params) => Object::Function {
+                            params: params.iter().map(|_| "".to_string()).collect::<Vec<_>>(),
+                            body: CheckedExpr::Internal {
+                                value: format!("ADTVALUECONSTRUCTOR_{}_{}", name, variant_name),
+                                type_annotation: adt_type_annotation.clone(),
+                            },
+                            env: Rc::clone(&self.env),
+                            type_annotation: adt_type_annotation.clone().as_return_type(params),
+                        },
+                        CheckedTypeVariantFields::Record(_) => {
+                            unimplemented!("Record type variant")
                         }
-                        TypeVariantFields::Tuple(fields) => {
-                            let constructor = Object::ADTConstructor {
-                                type_name: name.clone(),
-                                type_params: type_params.clone(),
-                                variant: variant_name.clone(),
-                                fields: fields.clone(),
-                            };
-                            env.insert_bind(variant_name.clone(), constructor)?;
-                        }
-                        TypeVariantFields::Record(fields) => {
-                            let constructor = Object::ADTConstructor {
-                                type_name: name.clone(),
-                                type_params: type_params.clone(),
-                                variant: variant_name.clone(),
-                                fields: fields
-                                    .iter()
-                                    .map(|(_, t)| Box::new(*t.clone()))
-                                    .collect::<Vec<_>>(),
-                            };
-                            env.insert_bind(variant_name.clone(), constructor)?;
-                        }
-                    }
+                    };
+
+                    env.insert_bind(variant_name, constructor)?;
                 }
+
                 Ok(Object::Unit)
             }
             CheckedStmt::Expr(expr) => self.eval_expr(expr),
@@ -204,34 +273,32 @@ impl Evaluator {
                 if let Some(val) = self.env.borrow().get_bind(&value) {
                     Ok(val)
                 } else {
-                    Err(EvalError::UndefinedVariable(*value))
+                    Err(EvalError::UndefinedVariable(value.clone()))
                 }
             }
             CheckedExpr::Literal { value, .. } => match value {
-                Literal::Int(i) => Ok(Object::Int(*i)),
-                Literal::Float(f) => Ok(Object::Float(*f)),
-                Literal::String(s) => Ok(Object::String(s.clone())),
-                Literal::Char(c) => Ok(Object::Char(*c)),
-                Literal::Bool(b) => Ok(Object::Bool(*b)),
-                Literal::Array(arr) => {
-                    let values = arr
-                        .iter()
-                        .map(|e| self.eval_expr(e.into()))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok(Object::Array(values))
-                }
+                Literal::Int(i) => Ok((*i).into()),
+                Literal::Float(f) => Ok((*f).into()),
+                Literal::String(s) => Ok(s.clone().into()),
+                Literal::Char(c) => Ok((*c).into()),
+                Literal::Bool(b) => Ok((*b).into()),
+                Literal::Array(arr) => Ok(arr
+                    .iter()
+                    .map(|e| self.eval_expr(&to_checked_expr(e.clone())))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into()),
                 Literal::Unit => Ok(Object::Unit),
             },
             CheckedExpr::Prefix { op, expr, .. } => {
                 let val = self.eval_expr(expr)?;
                 match op {
                     Token::Sub => match val {
-                        Object::Int(i) => Ok(Object::Int(-i)),
-                        Object::Float(f) => Ok(Object::Float(-f)),
+                        Object::Int(i) => Ok((-i).into()),
+                        Object::Float(f) => Ok((-f).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::Not => match val {
-                        Object::Bool(b) => Ok(Object::Bool(!b)),
+                        Object::Bool(b) => Ok((!b).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     _ => Err(EvalError::UnsupportedOperator),
@@ -243,68 +310,80 @@ impl Evaluator {
                 let left_val = self.eval_expr(left)?;
                 let right_val = self.eval_expr(right)?;
                 match op {
+                    Token::And => match (left_val, right_val) {
+                        (Object::Bool(l), Object::Bool(r)) => Ok((l && r).into()),
+                        _ => Err(EvalError::TypeMismatch),
+                    },
+                    Token::Or => match (left_val, right_val) {
+                        (Object::Bool(l), Object::Bool(r)) => Ok((l || r).into()),
+                        _ => Err(EvalError::TypeMismatch),
+                    },
                     Token::Plus => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) => Ok(Object::Int(l + r)),
-                        (Object::Float(l), Object::Float(r)) => Ok(Object::Float(l + r)),
+                        (Object::Int(l), Object::Int(r)) => Ok((l + r).into()),
+                        (Object::Float(l), Object::Float(r)) => Ok((l + r).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::Sub => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) => Ok(Object::Int(l - r)),
-                        (Object::Float(l), Object::Float(r)) => Ok(Object::Float(l - r)),
+                        (Object::Int(l), Object::Int(r)) => Ok((l - r).into()),
+                        (Object::Float(l), Object::Float(r)) => Ok((l - r).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::Mul => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) => Ok(Object::Int(l * r)),
-                        (Object::Float(l), Object::Float(r)) => Ok(Object::Float(l * r)),
+                        (Object::Int(l), Object::Int(r)) => Ok((l * r).into()),
+                        (Object::Float(l), Object::Float(r)) => Ok((l * r).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::Pow => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) => Ok(Object::Int(l.pow(r as u32))),
-                        (Object::Float(l), Object::Float(r)) => Ok(Object::Float(l.powf(r))),
+                        (Object::Int(l), Object::Int(r)) => Ok((l.pow(r as u32)).into()),
+                        (Object::Float(l), Object::Float(r)) => Ok((l.powf(r)).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::Div => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) if r != 0 => Ok(Object::Int(l / r)),
+                        (Object::Int(l), Object::Int(r)) if r != 0 => Ok((l / r).into()),
                         (Object::Float(l), Object::Float(r)) if r != 0.0 => {
                             Ok(Object::Float(l / r))
                         }
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::Mod => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) if r != 0 => Ok(Object::Int(l % r)),
+                        (Object::Int(l), Object::Int(r)) if r != 0 => Ok((l % r).into()),
                         (Object::Float(l), Object::Float(r)) if r != 0.0 => {
                             Ok(Object::Float(l % r))
                         }
                         _ => Err(EvalError::TypeMismatch),
                     },
-                    Token::Equal => Ok(Object::Bool(left_val == right_val)),
-                    Token::NotEqual => Ok(Object::Bool(left_val != right_val)),
+                    Token::Equal => Ok((left_val == right_val).into()),
+                    Token::NotEqual => Ok((left_val != right_val).into()),
                     Token::Greater => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) => Ok(Object::Bool(l > r)),
-                        (Object::Float(l), Object::Float(r)) => Ok(Object::Bool(l > r)),
+                        (Object::Int(l), Object::Int(r)) => Ok((l > r).into()),
+                        (Object::Float(l), Object::Float(r)) => Ok((l > r).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::GreaterEqual => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) => Ok(Object::Bool(l >= r)),
-                        (Object::Float(l), Object::Float(r)) => Ok(Object::Bool(l >= r)),
+                        (Object::Int(l), Object::Int(r)) => Ok((l >= r).into()),
+                        (Object::Float(l), Object::Float(r)) => Ok((l >= r).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::Less => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) => Ok(Object::Bool(l < r)),
-                        (Object::Float(l), Object::Float(r)) => Ok(Object::Bool(l < r)),
+                        (Object::Int(l), Object::Int(r)) => Ok((l < r).into()),
+                        (Object::Float(l), Object::Float(r)) => Ok((l < r).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::LessEqual => match (left_val, right_val) {
-                        (Object::Int(l), Object::Int(r)) => Ok(Object::Bool(l <= r)),
-                        (Object::Float(l), Object::Float(r)) => Ok(Object::Bool(l <= r)),
+                        (Object::Int(l), Object::Int(r)) => Ok((l <= r).into()),
+                        (Object::Float(l), Object::Float(r)) => Ok((l <= r).into()),
                         _ => Err(EvalError::TypeMismatch),
                     },
                     Token::ThinArrow => {
-                        if let (Object::Type(param), Object::Type(ret)) = (left_val, right_val) {
-                            Ok(Object::Type(TypeObject::Function(
-                                Box::new(param),
-                                Box::new(ret),
-                            )))
+                        if let (
+                            Object::Type { value: param, .. },
+                            Object::Type { value: ret, .. },
+                        ) = (left_val, right_val)
+                        {
+                            Ok(Object::Type {
+                                value: TypeObject::Function(Box::new(param), Box::new(ret)),
+                                kind_annotation: Kind::Star,
+                            })
                         } else {
                             Err(EvalError::TypeMismatch)
                         }
@@ -312,7 +391,7 @@ impl Evaluator {
                     Token::InfixIdent(value) => self.eval_func(
                         &CheckedExpr::Ident {
                             value: value.clone(),
-                            type_annotation: TypeObject::Any, // TODO
+                            type_annotation: TypeObject::Any, // TODO: infer type of custom operator
                         },
                         vec![left_val, right_val],
                     ),
@@ -320,7 +399,7 @@ impl Evaluator {
                         &CheckedExpr::Ident {
                             value: token.to_string(),
                             type_annotation: TypeObject::Any,
-                        }, // TODO
+                        },
                         vec![left_val, right_val],
                     ),
                 }
@@ -333,7 +412,7 @@ impl Evaluator {
                 params: params.clone(),
                 body: *body.clone(),
                 type_annotation: type_annotation.clone(),
-                env: self.env.clone(),
+                env: Rc::clone(&self.env),
             }),
             CheckedExpr::Call { callee, params, .. } => self.eval_func(
                 callee,
@@ -364,10 +443,7 @@ impl Evaluator {
                             case_env.borrow_mut().insert_bind(name, value)?;
                         }
                         let case_evaluator = Evaluator::new(case_env);
-                        if case_evaluator
-                            .eval_expr(&case.guard)?
-                            .eq(&Object::Bool(true))
-                        {
+                        if case_evaluator.eval_expr(&case.guard)?.eq(&(true).into()) {
                             return case_evaluator.eval_expr(&case.body);
                         }
                     }
@@ -379,7 +455,25 @@ impl Evaluator {
             } => {
                 let val = self.eval_expr(value)?;
                 let create_env = Env::extend(Rc::clone(&self.env));
-                create_env.borrow_mut().insert_bind(name.clone(), val)?;
+                create_env.borrow_mut().insert_bind(
+                    name.clone(),
+                    if let Object::Function {
+                        params,
+                        body,
+                        type_annotation,
+                        ..
+                    } = val
+                    {
+                        Object::Function {
+                            params: params.clone(),
+                            body: body.clone(),
+                            type_annotation: type_annotation.clone(),
+                            env: Rc::clone(&create_env),
+                        }
+                    } else {
+                        val
+                    },
+                )?;
                 Evaluator::new(create_env).eval_expr(body)
             }
             CheckedExpr::Block { stmts, .. } => {
@@ -411,7 +505,7 @@ impl Evaluator {
                 }),
             },
             Pattern::ADTConstructor { name, args } => {
-                if let Object::ADT {
+                if let Object::ADTValue {
                     variant, fields, ..
                 } = value
                 {
@@ -441,5 +535,156 @@ impl Evaluator {
                 _ => None,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::evaluator::{Evaluator, Object};
+    use crate::{env::new_evaluator_env, utils::unsafe_eval_code};
+
+    fn u(code: &str) -> Object {
+        match unsafe_eval_code(code, &mut Evaluator::new(new_evaluator_env())) {
+            Ok(obj) => obj,
+            Err(e) => e.into(),
+        }
+    }
+
+    #[test]
+    fn basic_literals_and_arithmetic() {
+        assert_eq!(u("1"), (1).into());
+        assert_eq!(u("1 + 2 * 3"), (7).into());
+        assert_eq!(u("2.5 * 4.0"), (10.0).into());
+        assert_eq!(u("true && !false"), (true).into());
+        assert_eq!(u("\"foo\""), ("foo").into());
+        assert_eq!(u("'c'"), ('c').into());
+        assert_eq!(u("[1,2,3]"), vec![1, 2, 3].into());
+    }
+
+    #[test]
+    fn maybe_and_list_adt_usage() {
+        let code = r#"
+            type Maybe = <A> Just(A) | Nothing
+            type List  = <A> Cons(A, List(A)) | Nil
+
+            let xs = Nil
+            let ys = Cons(1, Cons(2, xs))
+            ys
+        "#;
+        let result = u(code);
+        // ys = Cons(1, Cons(2, Nil))
+        match result {
+            Object::ADTValue {
+                variant,
+                fields,
+                type_annotation: _,
+            } => {
+                assert_eq!(variant, "Cons");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0], (1).into());
+                // second field itself is ADTValue Cons(2, Nil)
+                match &fields[1] {
+                    Object::ADTValue {
+                        variant: v2,
+                        fields: f2,
+                        ..
+                    } => {
+                        assert_eq!(v2, "Cons");
+                        assert_eq!(f2[0], (2).into());
+                    }
+                    _ => panic!("expected nested Cons"),
+                }
+                // verify type_annotation = List(Int)
+                // ! assert_eq!(
+                //     type_annotation,
+                //     TypeObject::ADTInst {
+                //         name: "List".into(),
+                //         params: vec![TypeObject::Int],
+                //     }
+                // );
+            }
+            _ => panic!("expected ADTValue"),
+        }
+    }
+
+    #[test]
+    fn recursive_functions_and_nat() {
+        let code = r#"
+            type Nat = Z | S(Nat)
+            let to_number = (x) =>
+              match x then
+                | S(n) => 1 + to_number(n)
+                | Z    => 0
+
+            to_number(S(S(S(Z))))
+        "#;
+        assert_eq!(u(code), (3).into());
+
+        // test add
+        let code2 = r#"
+            type Nat = Z | S(Nat)
+            let add = (x, y) =>
+              match x then
+                | S(n) => S(add(n, y))
+                | Z    => y
+
+            add(S(S(Z)), S(S(S(Z))))
+        "#;
+        // S(S(Z)) + SSS(Z) = five
+        match u(code2) {
+            Object::ADTValue { variant, .. } => {
+                assert_eq!(variant, "S");
+                // to_number should give 5
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn fibonacci_and_timing() {
+        let code = r#"
+            let fib = (n: Int): Int =>
+              if n < 2 then 1 else fib(n - 1) + fib(n - 2)
+
+            fib(5)
+        "#;
+        assert_eq!(u(code), (8).into());
+    }
+
+    #[test]
+    fn custom_infix_and_composition() {
+        let code = r#"
+            let #-# = (a, b) => a - b
+            10 `-` 3
+        "#;
+        assert_eq!(u(code), (7).into());
+
+        let code2 = r#"
+            let #$# = (f, x) => f(x)
+            let dbl = (y) => y * 2
+            dbl $ 5
+        "#;
+        assert_eq!(u(code2), (10).into());
+
+        let code3 = r#"
+            let #.# = (f, g) => (x) => f(g(x))
+            let inc = (x) => x + 1
+            let dbl = (x) => x * 2
+            let h = inc . dbl
+            h(3)
+        "#;
+        assert_eq!(u(code3), (7).into());
+    }
+
+    #[test]
+    fn let_in_expression() {
+        let code = r#"
+            let foo =
+              let x = 10 in
+              let y = 20 in
+              x + y
+            foo
+        "#;
+        assert_eq!(u(code), (30).into());
     }
 }

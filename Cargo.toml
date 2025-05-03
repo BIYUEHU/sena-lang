@@ -5,20 +5,11 @@ version = "0.0.1"
 authors = ["Arimura Sena <me@hotaru.icu>"]
 description = "A Modern Functional and Dependent Type Programming Language Base on Rust"
 readme = "README.md"
-keywords = [
-    "functional",
-    "dependent-type",
-    "language",
-    "type-theory",
-    "parser",
-]
+keywords = ["functional", "dependent-type", "language", "type-theory", "parser"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/BIYUEHU/mihama"
 
 [dependencies]
 
 [workspace]
-members = [
-    ".",
-    "playground",
-]
+members = [".", "playground"]

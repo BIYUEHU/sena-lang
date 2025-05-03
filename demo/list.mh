@@ -3,7 +3,11 @@ type List = <A> Cons(A, List(A)) | Nil
 
 let intList = List(Int)
 
+print(intList)
+
 let #:# = (el, list) => Cons(el, list)
+let #$# = (f, x) => f(x)
+let #.# = (g, f) => (x) => f(g(x))
 
 let get = (list, index) =>
   match list then
@@ -11,3 +15,33 @@ let get = (list, index) =>
       if index == 0 then Just(a) else get(b, index - 1)
     | Nil =>
       Nothing
+
+let map = (f, list) =>
+  match list then
+    | Cons(a, b) =>
+      Cons(f(a), map(f, b))
+    | Nil => Nil
+
+let #++# = (list1, list2) =>
+  match list1 then
+    | Cons(a, b) =>
+      Cons(a, b ++ list2)
+    | Nil => list2
+
+let #+++# = (str1, str2) => connect(str1, str2)
+
+let show = (a) =>
+  let f = (a) =>
+    match a then
+      | Cons(a, b) =>
+        a +++ let c = f(b) in if c == "" then "" else ", " +++ c
+      | Nil => ""
+  in "[" +++ f(a) +++ "]"
+
+let arr = 1 : 2 : 3 : 4 : Nil
+
+show . print $ arr
+
+map (print, get(arr, 2) : get(arr, 6) : Nil)
+
+{()}

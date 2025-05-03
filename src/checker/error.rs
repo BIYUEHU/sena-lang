@@ -22,6 +22,9 @@ pub enum TypeError {
         operation: String,
         typ: String,
     },
+    NotKind {
+        found: String,
+    },
 }
 
 impl From<EnvError> for TypeError {
@@ -60,6 +63,7 @@ impl fmt::Display for TypeError {
             InvalidOperation { operation, typ } => {
                 write!(f, "Invalid operation '{}' on type '{}'", operation, typ)
             }
+            NotKind { found } => write!(f, "Not a kind: '{}'", found),
         }
     }
 }

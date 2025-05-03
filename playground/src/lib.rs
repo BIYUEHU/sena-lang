@@ -44,8 +44,10 @@ pub fn App() -> impl IntoView {
             }>
                 <option value="">"Custom"</option>
                 <option value="hello_world">"Hello, world!"</option>
-                <option value="fibonacii">"Fibonacci series"</option>
+                <option value="fibonaci">"Fibonacci series"</option>
                 <option value="match">"Match expression"</option>
+                <option value="list">"Define list"</option>
+                <option value="infix">"Custom infix operators"</option>
                 <option value="demo">"Demo code"</option>
             </select>
             <br />

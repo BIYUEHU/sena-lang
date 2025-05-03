@@ -11,7 +11,7 @@ pub enum Kind {
 impl Display for Kind {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Kind::Star => write!(f, "*"),
+            Kind::Star => write!(f, "Kind"),
             Kind::Arrow(t1, t2) => {
                 if matches!(**t2, Kind::Arrow(..)) {
                     write!(f, "({}) -> {}", t1, t2)
@@ -94,7 +94,7 @@ impl Display for TypeExpr {
             TypeExpr::Forall(vs, t) => {
                 write!(
                     f,
-                    "forall {}. {}", // TODO
+                    "forall {}. {}",
                     vs.iter()
                         .map(|(v, t)| format!("{}: {}", v, t))
                         .collect::<Vec<_>>()
@@ -164,8 +164,8 @@ pub enum Stmt {
     },
     Type {
         name: String,
-        type_annotation: TypeExpr,
-        type_params: Option<Vec<String>>,
+        params: Vec<String>,
+        kind_annotation: TypeExpr,
         variants: Vec<TypeVariant>,
     },
     ImportAll {

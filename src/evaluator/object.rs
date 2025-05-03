@@ -1,6 +1,10 @@
 use crate::{
-    checker::{ast::CheckedExpr, object::TypeObject},
+    checker::{
+        ast::{Checked, CheckedExpr},
+        object::TypeObject,
+    },
     env::EvaluatorEnv,
+    parser::ast::Kind,
 };
 use std::{
     cell::RefCell,
@@ -35,7 +39,10 @@ pub enum Object {
         fields: Vec<Object>,
         type_annotation: TypeObject,
     },
-    Type(TypeObject),
+    Type {
+        value: TypeObject,
+        kind_annotation: Kind,
+    },
     /*? TypeFn {
         param: String,
         kind: TypeObject,
@@ -55,6 +62,85 @@ pub enum Object {
     Unit,
 }
 
+impl From<i64> for Object {
+    fn from(i: i64) -> Self {
+        Object::Int(i)
+    }
+}
+
+impl From<f64> for Object {
+    fn from(f: f64) -> Self {
+        Object::Float(f)
+    }
+}
+
+impl From<String> for Object {
+    fn from(s: String) -> Self {
+        Object::String(s)
+    }
+}
+
+impl From<&str> for Object {
+    fn from(s: &str) -> Self {
+        Object::String(s.to_string())
+    }
+}
+
+impl From<char> for Object {
+    fn from(c: char) -> Self {
+        Object::Char(c)
+    }
+}
+
+impl From<bool> for Object {
+    fn from(b: bool) -> Self {
+        Object::Bool(b)
+    }
+}
+
+impl<T: Into<Object>> From<Vec<T>> for Object {
+    fn from(t: Vec<T>) -> Self {
+        Object::Array(
+            {
+                let t: Vec<_> = t.into();
+                t
+            }
+            .into_iter()
+            .map(|o| o.into())
+            .collect(),
+        )
+    }
+}
+
+impl Checked for Object {
+    fn get_type(&self) -> TypeObject {
+        match self {
+            Object::Int(_) => TypeObject::Int,
+            Object::Float(_) => TypeObject::Float,
+            Object::String(_) => TypeObject::String,
+            Object::Char(_) => TypeObject::Char,
+            Object::Bool(_) => TypeObject::Bool,
+            Object::Array(elements) => TypeObject::ADTInst {
+                name: "Array".to_string(),
+                params: vec![elements
+                    .first()
+                    .map(|e| e.get_type().clone())
+                    .unwrap_or(TypeObject::Unknown)],
+            },
+            Object::Function {
+                type_annotation, ..
+            } => type_annotation.clone(),
+            Object::ADTValue {
+                type_annotation, ..
+            } => type_annotation.clone(),
+            Object::Type {
+                kind_annotation, ..
+            } => TypeObject::Kind(kind_annotation.clone()),
+            Object::Unit => TypeObject::Unit,
+        }
+    }
+}
+
 impl Display for Object {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
@@ -70,7 +156,7 @@ impl Display for Object {
             Object::Function { .. } => {
                 write!(f, "Function({})", self.type_info())
             }
-            Object::Type(t) => write!(f, "Kind({})", t),
+            Object::Type { value, .. } => write!(f, "Kind({})", value),
             Object::ADTValue {
                 variant,
                 fields,
@@ -128,7 +214,7 @@ impl PrettyPrint for Object {
                 format!("[{}]", elems.join(", "))
             }
             Object::Function { .. } => "<function>".to_string(),
-            Object::Type(t) => t.to_string(),
+            Object::Type { value, .. } => value.to_string(),
             Object::ADTValue {
                 variant,
                 fields,
@@ -164,7 +250,9 @@ impl TypeInfo for Object {
             Object::String(_) => "String".to_string(),
             Object::Char(_) => "Char".to_string(),
             Object::Bool(_) => "Bool".to_string(),
-            Object::Type(_) => "Kind".to_string(),
+            Object::Type {
+                kind_annotation, ..
+            } => kind_annotation.to_string(),
             Object::Array(arr) => {
                 if let Some(first) = arr.first() {
                     format!("[{}]", first.type_info())

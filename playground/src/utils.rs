@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use mihama::{
     checker::Checker,
-    env::env::{new_checker_env, new_evaluator_env},
+    env::{new_checker_env, new_evaluator_env},
     evaluator::{
         object::{Object, PrettyPrint, TypeInfo},
         Evaluator,
@@ -11,7 +11,7 @@ use mihama::{
     utils::{eval_code, get_checked_ast, parse_code, unsafe_eval_code, RunningMode},
 };
 
-use crate::example::{DEMO_CODE, FIBONACII_CODE, MATCH_CODE};
+use crate::example::{DEMO_CODE, FIBONACI_CODE, INFIX_CODE, LIST_CODE, MATCH_CODE};
 
 pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result<String, String> {
     let mut evaluator = Evaluator::new(new_evaluator_env());
@@ -33,10 +33,7 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
             Ok(Object::Unit)
         }),
     );
-    evaluator.set_custom_func(
-        "get_timestrap".to_string(),
-        Box::new(|_| Ok(Object::Int(1))),
-    );
+    evaluator.set_custom_func("get_timestrap".to_string(), Box::new(|_| Ok(1.into())));
 
     match mode {
         RunningMode::Lexer => {
@@ -90,9 +87,11 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
 
 pub fn get_example_code(name: String) -> &'static str {
     match name.as_str() {
-        "fibonacii" => FIBONACII_CODE,
+        "fibonaci" => FIBONACI_CODE,
         "match" => MATCH_CODE,
         "demo" => DEMO_CODE,
+        "list" => LIST_CODE,
+        "infix" => INFIX_CODE,
         "hello_world" => {
             r#"let main:Unit = print("Hello, world!")
 "#

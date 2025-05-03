@@ -2,7 +2,9 @@ use crate::{
     lexer::token::{Token, TokenData},
     utils::get_arrow_type,
 };
-use ast::{Expr, Literal, MatchCase, Pattern, Stmt, TypeExpr, TypeVariant, TypeVariantFields};
+use ast::{
+    Expr, Kind, Literal, MatchCase, Pattern, Stmt, TypeExpr, TypeVariant, TypeVariantFields,
+};
 use error::ParseError;
 use precedence::Precedence;
 
@@ -239,32 +241,44 @@ impl Parser {
             _ => return Err(self.error_unexpected_token("identifier")),
         };
 
-        let type_annotation = if self.next_token_is(&Token::Colon) {
+        let mut kind_annotation = if self.next_token_is(&Token::Colon) {
             self.next_token();
             self.next_token();
             self.type_expression()?
         } else {
-            TypeExpr::Con("Unknown".into())
+            TypeExpr::Con("Unknown".to_string())
         };
 
         self.next_token_consume(&Token::Assign, "'=' after type name")?;
-        let type_params = if self.next_token_is(&Token::Less) {
+        let params = if self.next_token_is(&Token::Less) {
             self.next_token();
             let params = self.identifier_list(Token::Greater)?;
             if params.is_empty() {
                 return Err(self.error_invalid_syntax("type parameters couldn't be empty"));
             }
-            Some(params)
+            params
         } else {
-            None
+            vec![]
         };
+
+        if kind_annotation == TypeExpr::Con("Unknown".to_string()) {
+            kind_annotation = if params.is_empty() {
+                TypeExpr::Kind(Kind::Star)
+            } else {
+                get_arrow_type(
+                    params.iter().map(|_| TypeExpr::Kind(Kind::Star)).collect(),
+                    TypeExpr::Kind(Kind::Star),
+                )
+            };
+        }
 
         let variants = self.type_variants()?;
 
+        // TODO use lambda typeexpr to explain type annotations
         Ok(Stmt::Type {
-            name,
-            type_annotation,
-            type_params,
+            name: name.clone(),
+            params,
+            kind_annotation,
             variants,
         })
     }
@@ -287,7 +301,7 @@ impl Parser {
                 }
                 TypeVariantFields::Tuple(exprs)
             }
-            // TODO: record
+            // TODO: record type
             /*  else if self.next_token_is(&Token::LeftBrace) {
                 self.next_token();
                 let mut fields = vec![];
@@ -788,8 +802,8 @@ mod tests {
             parse("type List = Nil | Cons(int, List)"),
             vec![Stmt::Type {
                 name: "List".to_string(),
-                type_annotation: TypeExpr::default(),
-                type_params: None,
+                params: vec![],
+                kind_annotation: TypeExpr::Kind(Kind::Star),
                 variants: vec![
                     TypeVariant {
                         name: "Nil".to_string(),
@@ -810,8 +824,11 @@ mod tests {
             parse("type List = <T> Nil | Cons(T, List(T))"),
             vec![Stmt::Type {
                 name: "List".to_string(),
-                type_annotation: TypeExpr::default(),
-                type_params: Some(vec!["T".to_string()]),
+                params: vec!["T".to_string()],
+                kind_annotation: TypeExpr::Arrow(
+                    Box::new(TypeExpr::Kind(Kind::Star)),
+                    Box::new(TypeExpr::Kind(Kind::Star))
+                ),
                 variants: vec![
                     TypeVariant {
                         name: "Nil".to_string(),
@@ -835,8 +852,8 @@ mod tests {
             parse("type Color: Kind = Red | Green | Blue"),
             vec![Stmt::Type {
                 name: "Color".to_string(),
-                type_annotation: TypeExpr::Con("Kind".to_string()),
-                type_params: None,
+                params: vec![],
+                kind_annotation: TypeExpr::Con("Kind".to_string()),
                 variants: vec![
                     TypeVariant {
                         name: "Red".to_string(),
@@ -894,8 +911,8 @@ mod tests {
                 only_abstract: true,
                 body: Box::new(Stmt::Type {
                     name: "Nat".to_string(),
-                    type_annotation: TypeExpr::default(),
-                    type_params: None,
+                    params: vec![],
+                    kind_annotation: TypeExpr::Kind(Kind::Star),
                     variants: vec![
                         TypeVariant {
                             name: "Zero".to_string(),
@@ -951,7 +968,7 @@ mod tests {
                     Box::new(TypeExpr::Con("Int".to_string())),
                     Box::new(TypeExpr::Arrow(
                         Box::new(TypeExpr::Con("Int".to_string())),
-                        Box::new(TypeExpr::Con("Int".to_string()))
+                        Box::new(TypeExpr::default())
                     ))
                 )
             }),

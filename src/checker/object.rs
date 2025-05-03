@@ -1,9 +1,10 @@
 use core::fmt;
 use std::fmt::{Display, Formatter};
 
+use crate::parser::ast::Kind;
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum TypeObject {
-    Kind,
     Int,
     Float,
     String,
@@ -12,10 +13,11 @@ pub enum TypeObject {
     Unit,
     Unknown,
     Any,
+    Kind(Kind),
     Function(Box<TypeObject>, Box<TypeObject>),
     ADTDef {
         name: String,
-        type_params: Vec<String>,
+        params: Vec<String>,
         constructors: Vec<(String, TypeObject)>,
     },
     ADTInst {
@@ -26,8 +28,29 @@ pub enum TypeObject {
     Lambda((String, Box<TypeObject>), Box<TypeObject>), // ?
 }
 
+impl TypeObject {
+    pub fn as_return_type(&self, params: Vec<TypeObject>) -> TypeObject {
+        match params.len() {
+            0 => TypeObject::Function(Box::new(TypeObject::Unit), Box::new(self.clone())),
+            1 => TypeObject::Function(Box::new(params[0].clone()), Box::new(self.clone())),
+            _ => TypeObject::Function(
+                Box::new(params[0].clone()),
+                Box::new(self.as_return_type(params[1..].to_vec())),
+            ),
+        }
+    }
+
+    pub fn get_last_type(&self) -> TypeObject {
+        if let TypeObject::Function(_, ret) = self {
+            ret.get_last_type()
+        } else {
+            self.clone()
+        }
+    }
+}
+
 pub static PRIMIVE_TYPES: [TypeObject; 9] = [
-    TypeObject::Kind,
+    TypeObject::Kind(Kind::Star),
     TypeObject::Int,
     TypeObject::Float,
     TypeObject::String,
@@ -135,7 +158,7 @@ pub static PRIMIVE_TYPES: [TypeObject; 9] = [
 impl Display for TypeObject {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            TypeObject::Kind => write!(f, "Kind"),
+            TypeObject::Kind(kind) => write!(f, "{}", kind),
             TypeObject::Int => write!(f, "Int"),
             TypeObject::Float => write!(f, "Float"),
             TypeObject::String => write!(f, "String"),
@@ -143,7 +166,7 @@ impl Display for TypeObject {
             TypeObject::Bool => write!(f, "Bool"),
             TypeObject::Unit => write!(f, "Unit"),
             TypeObject::Unknown => write!(f, "Unknown"),
-            TypeObject::Any => write!(f, "*"),
+            TypeObject::Any => write!(f, "Any"),
             // TypeObject::Array(t) => write!(f, "[{}]", t),
             TypeObject::Function(param, ret) => {
                 if matches!(**param, TypeObject::Function(_, _)) {
@@ -154,16 +177,20 @@ impl Display for TypeObject {
             }
             TypeObject::ADTDef { name, .. } => write!(f, "{}", name),
             TypeObject::ADTInst { name, params } => {
-                write!(
-                    f,
-                    "{}<{}>",
-                    name,
-                    params
-                        .iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
+                if params.is_empty() {
+                    write!(f, "{}", name)
+                } else {
+                    write!(
+                        f,
+                        "{}<{}>",
+                        name,
+                        params
+                            .iter()
+                            .map(|t| t.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
             }
             TypeObject::Forall(vars, body) => {
                 write!(

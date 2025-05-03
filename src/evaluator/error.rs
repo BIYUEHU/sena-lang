@@ -1,15 +1,18 @@
-use crate::env::error::EnvError;
+use crate::{checker::error::TypeError, env::error::EnvError};
 use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
     UndefinedVariable(String),
     RedefinedVariable(String),
+    // TODO: replace type error with type mismatch
     TypeMismatch,
     UnsupportedOperator,
     ArityMismatch,
-    NotCallable,
     PatternMatchFailure,
+    NotCallable,
+    NotAType(String),
+    TypeError(TypeError),
 }
 
 impl From<EnvError> for EvalError {
@@ -17,6 +20,12 @@ impl From<EnvError> for EvalError {
         match error {
             EnvError::RedefinedBinding(name) => EvalError::RedefinedVariable(name),
         }
+    }
+}
+
+impl From<TypeError> for EvalError {
+    fn from(error: TypeError) -> Self {
+        EvalError::TypeError(error)
     }
 }
 
@@ -32,6 +41,8 @@ impl Display for EvalError {
                 write!(f, "Identifier '{}' is already defined", name)
             }
             EvalError::PatternMatchFailure => write!(f, "Pattern match failed"),
+            EvalError::NotAType(name) => write!(f, "Not a type: {}", name),
+            EvalError::TypeError(error) => write!(f, "Type error: {}", error),
         }
     }
 }

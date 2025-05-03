@@ -1,51 +1,11 @@
 use super::object::TypeObject;
 use crate::{
     lexer::token::Token,
-    parser::ast::{Literal, Pattern, TypeVariant},
+    parser::ast::{Kind, Literal, Pattern},
 };
 
-impl CheckedExpr {
-    pub fn get_type(&self) -> &TypeObject {
-        match self {
-            CheckedExpr::Ident {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::Prefix {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::Infix {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::Call {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::Function {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::If {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::Match {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::LetIn {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::Block {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::Literal {
-                type_annotation, ..
-            } => type_annotation,
-            CheckedExpr::Internal {
-                type_annotation, ..
-            } => type_annotation,
-        }
-    }
-
-    pub fn clone_type(&self) -> TypeObject {
-        self.get_type().clone()
-    }
+pub trait Checked {
+    fn get_type(&self) -> TypeObject;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,6 +66,47 @@ pub enum CheckedExpr {
     },
 }
 
+impl Checked for CheckedExpr {
+    fn get_type(&self) -> TypeObject {
+        match self {
+            CheckedExpr::Ident {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::Prefix {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::Infix {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::Call {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::Function {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::If {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::Match {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::LetIn {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::Block {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::Literal {
+                type_annotation, ..
+            } => type_annotation,
+            CheckedExpr::Internal {
+                type_annotation, ..
+            } => type_annotation,
+        }
+        .clone()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct CheckedCase {
     pub pattern: Pattern,
@@ -122,9 +123,9 @@ pub enum CheckedStmt {
     },
     Type {
         name: String,
-        type_annotation: TypeObject,
-        type_params: Option<Vec<String>>,
-        variants: Vec<TypeVariant>,
+        params: Vec<String>,
+        kind_annotation: Kind,
+        variants: Vec<CheckedTypeVariant>,
     },
     ImportAll {
         source: String,
@@ -140,3 +141,18 @@ pub enum CheckedStmt {
     },
     Expr(CheckedExpr),
 }
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct CheckedTypeVariant {
+    pub name: String,
+    pub fields: CheckedTypeVariantFields,
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub enum CheckedTypeVariantFields {
+    Tuple(Vec<TypeObject>),
+    Record(Vec<(String, TypeObject)>),
+    Unit,
+}
+
+pub type Program = Vec<CheckedStmt>;

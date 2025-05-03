@@ -1,6 +1,7 @@
 use crate::checker::ast::CheckedExpr;
 use crate::checker::object::{TypeObject, PRIMIVE_TYPES};
 use crate::evaluator::object::Object;
+use crate::parser::ast::Kind;
 use error::EnvError;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -107,8 +108,16 @@ pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
     let env = Rc::clone(&env_origin);
     let mut env = env.borrow_mut();
     for t in PRIMIVE_TYPES.iter() {
-        env.insert_bind(t.to_string(), Object::Type(t.clone()))
-            .unwrap();
+        let name = t.to_string();
+        env.insert_bind(
+            // name.eq("*").then(|| "Kind".to_string()).unwrap_or(name),
+            name,
+            Object::Type {
+                value: t.clone(),
+                kind_annotation: Kind::Star,
+            },
+        )
+        .unwrap();
     }
     env.insert_bind(
         "print".to_string(),
@@ -137,6 +146,38 @@ pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
             type_annotation: TypeObject::Function(
                 Box::new(TypeObject::Unit),
                 Box::new(TypeObject::Float),
+            ),
+            env: Rc::clone(&env_origin),
+        },
+    )
+    .unwrap();
+    env.insert_bind(
+        "get_bind".to_string(),
+        Object::Function {
+            params: vec!["x".to_string()],
+            body: CheckedExpr::Internal {
+                value: "get_bind".to_string(),
+                type_annotation: TypeObject::String,
+            },
+            type_annotation: TypeObject::Function(
+                Box::new(TypeObject::String),
+                Box::new(TypeObject::String),
+            ),
+            env: Rc::clone(&env_origin),
+        },
+    )
+    .unwrap();
+    env.insert_bind(
+        "connect".to_string(),
+        Object::Function {
+            params: vec!["...args".to_string()],
+            body: CheckedExpr::Internal {
+                value: "connect".to_string(),
+                type_annotation: TypeObject::String,
+            },
+            type_annotation: TypeObject::Function(
+                Box::new(TypeObject::Any),
+                Box::new(TypeObject::String),
             ),
             env: Rc::clone(&env_origin),
         },

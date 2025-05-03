@@ -1,0 +1,45 @@
+name: Build
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Setup dependencies
+        run: cargo install trunk
+
+      - name: Build site
+        run: |
+          cd playground
+          trunk build
+
+      - name: Deploy to GitHub Pages
+        uses: crazy-max/ghaction-github-pages@v4
+        with:
+          target_branch: web
+          build_dir: dist
+          fqdn: https://mihama.hotaru.icu
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
