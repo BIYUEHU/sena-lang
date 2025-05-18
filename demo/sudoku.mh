@@ -1,0 +1,66 @@
+type List = <A> Cons(A, List(A)) | Nil
+
+let #:# = (el, list) => Cons(el, list)
+let #$# = (f, x) => f(x)
+let #.# = (g, f) => (x) => f(g(x))
+
+let get = (list, index) =>
+  match list then
+    | Cons(a, b) =>
+      if index == 0 then Just(a) else get(b, index - 1)
+    | Nil =>
+      Nothing
+
+let map = (f, list) =>
+  match list then
+    | Cons(a, b) =>
+      Cons(f(a), map(f, b))
+    | Nil => Nil
+
+let #++# = (list1, list2) =>
+  match list1 then
+    | Cons(a, b) =>
+      Cons(a, b ++ list2)
+    | Nil => list2
+
+let #+++# = (str1, str2) => connect(str1, str2)
+
+let show = (a) =>
+  let f = (a) =>
+    match a then
+      | Cons(a, b) =>
+        a +++ let c = f(b) in if c == "" then "" else ", " +++ c
+      | Nil => ""
+  in "[" +++ f(a) +++ "]"
+
+let replicate = (n, x) =>
+    if n <= 0 then Nil
+    else Cons(x, replicate(n-1, x))
+
+let Grid = List(List(Int))
+
+let emptyGrid = replicate(9, replicate(9, 0))
+
+let showGrid = (grid) =>
+  let cols = (col) =>
+    match col then
+      | Cons(a, b) =>
+        a +++ let c = cols(b) in if c == "" then "" else "|" +++ c
+      | Nil => ""
+  in
+  let rows = (row) =>
+    match row then
+      | Cons(a, b) =>
+        cols(a) +++ let c = rows(b) in if c == "" then "" else "\n" +++ c
+      | Nil => ""
+  in
+  rows(grid)
+
+
+let isValid = (g, r, c, n) =>
+  match get(g, r) then | Just(row) =>
+  match get(row, c) then | Just(col)
+        | Nothing => true
+  let row = g 
+
+print(showGrid(emptyGrid))
