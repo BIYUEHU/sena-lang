@@ -110,18 +110,18 @@ let getCol = (grid, c) =>
     )
   )
 
-let getBox: Grid -> Pair(Int, Int) -> List(Int)  = (g, pair) =>
+let getBox: Grid -> Pair(Int, Int) -> List(Int) = (g, pair) =>
   match pair then
     | MkPair(r, c) =>
       let br = (r / 3) * 3 in
       let bc = (c / 3) * 3 in
       concatMap(
-        dr =>
+        (dr) =>
           concatMap(
-            dc =>
-              maybeToList(get(maybeToInt(get(g, br + dr)), bc + dc)),
-            0.. 2
-          ),
+            (dc) =>
+              maybeToList(get(maybeToInt(get(g, br + dr)), bc + dc))
+          )
+        ,
         0 .. 2
       )
     | _ => Nil
