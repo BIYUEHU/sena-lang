@@ -1,11 +1,25 @@
 type List = <A> Cons(A, List(A)) | Nil
+type Pair = <A, B> MkPair(A, B)
+type Maybe = <A> Just(A) | Nothing
 
 let #:# = (el, list) => Cons(el, list)
 let #$# = (f, x) => f(x)
 let #.# = (g, f) => (x) => f(g(x))
+let #..#: Int -> Int -> List(Int) = (start, end) =>
+  if start > end then Nil
+  else start : (start + 1 .. end)
+
+let #++# = (list1, list2) =>
+  match list1 then
+    | Cons(a, b) =>
+      Cons(a, b ++ list2)
+    | Nil => list2
+
+let #+++# = (str1, str2) => connect(str1, str2)
 
 let get = (list, index) =>
-  match list then
+  if index < 0 then Nothing
+  else match list then
     | Cons(a, b) =>
       if index == 0 then Just(a) else get(b, index - 1)
     | Nil =>
@@ -17,13 +31,41 @@ let map = (f, list) =>
       Cons(f(a), map(f, b))
     | Nil => Nil
 
-let #++# = (list1, list2) =>
-  match list1 then
+let filter = (f, list) =>
+  match list then
     | Cons(a, b) =>
-      Cons(a, b ++ list2)
-    | Nil => list2
+      if f(a) then Cons(a, filter(f, b))
+      else filter(f, b)
+    | Nil => Nil
 
-let #+++# = (str1, str2) => connect(str1, str2)
+let take = (n, list) =>
+  if n <= 0 then Nil
+  else match list then
+    | Cons(a, b) =>
+      Cons(a, take(n-1, b))
+    | Nil => Nil
+
+let concatMap = (f, list) =>
+  match list then
+    | Cons(a, b) =>
+      f(a) ++ concatMap(f, b)
+    | Nil => Nil
+
+let maybeToList = (maybe) =>
+  match maybe then
+    | Just(a) => Cons(a, Nil)
+    | Nothing => Nil
+
+let maybeToInt: Maybe(Int) -> Int = (maybe) =>
+  match maybe then
+    | Just(a) => a
+    | Nothing => -1
+
+let elem = (x, list) =>
+  match list then
+    | Cons(a, b) =>
+      if a == x then true else elem(x, b)
+    | Nil => false
 
 let show = (a) =>
   let f = (a) =>
@@ -56,11 +98,43 @@ let showGrid = (grid) =>
   in
   rows(grid)
 
+let getRow = get
 
-let isValid = (g, r, c, n) =>
-  match get(g, r) then | Just(row) =>
-  match get(row, c) then | Just(col)
-        | Nothing => true
-  let row = g 
+let getCol = (grid, c) =>
+  map(maybeToInt, filter(
+      (x) =>
+      match x then
+        | Just(_) => true
+        | _ => false,
+      map((row) => get(row, c), grid)
+    )
+  )
+
+let getBox: Grid -> Pair(Int, Int) -> List(Int)  = (g, pair) =>
+  match pair then
+    | MkPair(r, c) =>
+      let br = (r / 3) * 3 in
+      let bc = (c / 3) * 3 in
+      concatMap(
+        dr =>
+          concatMap(
+            dc =>
+              maybeToList(get(maybeToInt(get(g, br + dr)), bc + dc)),
+            0.. 2
+          ),
+        0 .. 2
+      )
+    | _ => Nil
+
+let isValid: Grid -> Pair(Int, Int) -> Int -> Bool = (g, pair, n) =>
+  match pair then
+    | MkPair(r, c) =>
+      match getRow(g, r) then
+        | Just(row) =>
+          !elem(n, row) && !elem(n, getCol(g, c)) && !elem(n, getBox(g, MkPair(r, c)))
+        | Nothing => false
 
 print(showGrid(emptyGrid))
+// print(getRow(emptyGrid, 0))
+print(show(getCol(emptyGrid, 0)))
+// print(show(0 .. 8))
