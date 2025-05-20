@@ -9,6 +9,11 @@ keywords = ["functional", "dependent-type", "language", "type-theory", "parser"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/BIYUEHU/mihama"
 
+[profile.release]
+opt-level = 's'
+lto = true
+debug = false
+
 [dependencies]
 
 [workspace]

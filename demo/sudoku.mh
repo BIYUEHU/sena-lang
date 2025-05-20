@@ -51,6 +51,12 @@ let concatMap = (f, list) =>
       f(a) ++ concatMap(f, b)
     | Nil => Nil
 
+let foldl = (f, acc, list) =>
+  match list then
+    | Cons(x, xs) =>
+      foldl(f, f(acc, x), xs)
+    | Nil => acc
+
 let maybeToList = (maybe) =>
   match maybe then
     | Just(a) => Cons(a, Nil)
@@ -66,6 +72,10 @@ let elem = (x, list) =>
     | Cons(a, b) =>
       if a == x then true else elem(x, b)
     | Nil => false
+
+let max = (x, y) => if x > y then x else y
+
+let min = (x, y) => if x < y then x else y
 
 let show = (a) =>
   let f = (a) =>
@@ -119,7 +129,8 @@ let getBox: Grid -> Pair(Int, Int) -> List(Int) = (g, pair) =>
         (dr) =>
           concatMap(
             (dc) =>
-              maybeToList(get(maybeToInt(get(g, br + dr)), bc + dc))
+              maybeToList(get(maybeToInt(get(g, br + dr)), bc + dc)),
+              0 .. 2
           )
         ,
         0 .. 2
@@ -134,7 +145,83 @@ let isValid: Grid -> Pair(Int, Int) -> Int -> Bool = (g, pair, n) =>
           !elem(n, row) && !elem(n, getCol(g, c)) && !elem(n, getBox(g, MkPair(r, c)))
         | Nothing => false
 
-print(showGrid(emptyGrid))
-// print(getRow(emptyGrid, 0))
-print(show(getCol(emptyGrid, 0)))
-// print(show(0 .. 8))
+let findEmpty: Grid -> Maybe(Pair(Int, Int)) = (g) =>
+  let findCol = (row, r, c) =>
+    match row then
+      | Cons(cell, cells) =>
+        if cell == 0 then Just(c)
+        else findCol(cells, r, c + 1)
+      | Nil => Nothing
+  in
+  let findRow = (grid, r) =>
+    match grid then
+      | Cons(row, rows) =>
+        match findCol(row, r, 0) then
+          | Just(c) => Just(MkPair(r, c))
+          | Nothing => findRow(rows, r + 1)
+      | Nil => Nothing
+  in
+  findRow(g, 0)
+
+
+let updateGrid: Grid -> Pair(Int, Int) -> Int -> Grid = (g, pair, n) =>
+  match pair then
+    | MkPair(tr, tc) =>
+      let updateCols = (row, c) =>
+        match row then
+          | Cons(cell, cells) =>
+            (if c == tc then n else cell) : updateCols(cells, c + 1)
+          | Nil => Nil
+      in
+      let updateRows = (grid, r) =>
+        match grid then
+          | Cons(row, rows) =>
+            (if r == tr then updateCols(row, 0) else row) : updateRows(rows, r + 1)
+          | Nil => Nil
+      in
+      updateRows(g, 0)
+
+let solve: Grid -> Maybe(Grid) = (g) =>
+  match findEmpty(g) then
+    | Just(pair) =>
+      match pair then
+        | MkPair(r, c) =>
+          let tryNumbers = (numbers) =>
+            match numbers then
+              | Cons(x, xs) =>
+                match solve(updateGrid(g, pair, x)) then
+                  | Just(grid) => Just(grid)
+                  | Nothing => tryNumbers(xs)
+              | Nil => Nothing
+          in
+          tryNumbers(0 .. 9)
+    | Nothing => Just(g)
+
+let digHoles: Grid -> Int -> Grid = (g, k) =>
+  if k <= 0 then g
+  else let gen = (r, c) =>
+    if r == 9 then Nil else
+    if c == 9 then gen(r + 1, 0) else
+    MkPair(r, c) : gen(r, c + 1)
+    in
+    foldl(updateGrid(g, take(k, gen(0, 0)) ,0))
+
+let generatePuzzle: Int -> Maybe(Grid) = (clues) =>
+  match solve(emptyGrid) then
+    | Just(full) =>
+      Just(digHoles(full, 81 - max(17, min(clues, 81))))
+    | Nothing => Nothing
+
+
+match generatePuzzle(30) then
+  | Just(puzzle) => {
+    print("Puzzle:")
+    print(showGrid(puzzle))
+    match solve(puzzle) then
+      | Just(solved) => {
+        print("Solution:")
+        print(showGrid(solved))
+      }
+      | Nothing => print("No solution found.")
+  }
+  | Nothing => print("Failed to generate puzzle.")

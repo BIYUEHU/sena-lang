@@ -448,6 +448,8 @@ impl Evaluator {
                         }
                     }
                 }
+                println!("match failure: {}", match_value);
+                println!("match cases: {:#?}", cases);
                 Err(EvalError::PatternMatchFailure)
             }
             CheckedExpr::LetIn {

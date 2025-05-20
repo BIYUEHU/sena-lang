@@ -216,16 +216,13 @@ impl PrettyPrint for Object {
             Object::Function { .. } => "<function>".to_string(),
             Object::Type { value, .. } => value.to_string(),
             Object::ADTValue {
-                variant,
-                fields,
-                type_annotation,
+                variant, fields, ..
             } => {
                 if fields.is_empty() {
-                    format!("{}::{}", type_annotation, variant)
+                    variant.clone()
                 } else {
                     format!(
-                        "{}::{}({})",
-                        type_annotation,
+                        "{}({})",
                         variant,
                         fields
                             .iter()
