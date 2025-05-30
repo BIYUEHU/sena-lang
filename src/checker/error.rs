@@ -10,6 +10,10 @@ pub enum TypeError {
         found: String,
         context: String,
     },
+    KindMismatch {
+        expected: String,
+        found: String,
+    },
     ArityMismatch {
         expected: usize,
         found: usize,
@@ -49,6 +53,11 @@ impl fmt::Display for TypeError {
                 f,
                 "Type mismatch in '{}': expected '{}', found '{}'",
                 context, expected, found
+            ),
+            KindMismatch { expected, found } => write!(
+                f,
+                "Kind mismatch: expected '{}', found '{}'",
+                expected, found
             ),
             ArityMismatch {
                 expected,

@@ -144,7 +144,7 @@ impl Display for TokenData {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(
             f,
-            "TokenData: {:?} at line {}, column {}",
+            "TokenData: {} at line {}, column {}",
             self.token, self.line, self.column
         )
     }

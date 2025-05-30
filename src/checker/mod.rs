@@ -1,9 +1,10 @@
 use crate::checker::object::TypeObject;
-use crate::env::CheckerEnv;
+use crate::env::{CheckerEnv, Env};
 use crate::lexer::token::Token;
 use crate::parser::ast::{
     Expr, Kind, Literal, Pattern, Stmt, TypeExpr, TypeVariantFields, UnsafeProgram,
 };
+use crate::utils::{type_to_vec, vec_to_kind, vec_to_type};
 use ast::{
     Checked, CheckedCase, CheckedExpr, CheckedStmt, CheckedTypeVariant, CheckedTypeVariantFields,
 };
@@ -29,17 +30,27 @@ impl Checker {
             Literal::Char(_) => TypeObject::Char,
             Literal::Bool(_) => TypeObject::Bool,
             Literal::Unit => TypeObject::Unit,
-            _ => TypeObject::Unknown,
+            _ => TypeObject::Any,
         })
     }
 
     pub fn resolve_kind(type_object: &TypeObject) -> Result<Kind, TypeError> {
         match type_object {
             TypeObject::Kind(kind) => Ok(kind.clone()),
-            _ => Err(TypeError::TypeMismatch {
+            TypeObject::Function(a, b)
+                if matches!(
+                    [*a.clone(), *b.clone()],
+                    [TypeObject::Kind(_), TypeObject::Kind(_)]
+                ) =>
+            {
+                Ok(Kind::Arrow(
+                    Box::new(Checker::resolve_kind(a)?),
+                    Box::new(Checker::resolve_kind(b)?),
+                ))
+            }
+            _ => Err(TypeError::KindMismatch {
                 expected: "Kind".into(),
                 found: format!("{}", type_object),
-                context: "".into(),
             }),
         }
     }
@@ -49,10 +60,19 @@ impl Checker {
         env: Rc<RefCell<CheckerEnv>>,
     ) -> Result<TypeObject, TypeError> {
         match type_expr {
-            TypeExpr::Var(name) | TypeExpr::Con(name) => env
-                .borrow()
-                .get_bind(name)
-                .ok_or(TypeError::UndefinedVariable(name.clone())),
+            TypeExpr::Var(name) | TypeExpr::Con(name) => match name.as_str() {
+                "Int" => Ok(TypeObject::Int),
+                "Float" => Ok(TypeObject::Float),
+                "String" => Ok(TypeObject::String),
+                "Char" => Ok(TypeObject::Char),
+                "Bool" => Ok(TypeObject::Bool),
+                "Unit" => Ok(TypeObject::Unit),
+                "Any" => Ok(TypeObject::Any),
+                _ => env
+                    .borrow()
+                    .get_bind(name)
+                    .ok_or(TypeError::UndefinedVariable(name.clone())),
+            },
             TypeExpr::App(constructor, args) => {
                 let base = Checker::resolve(constructor, Rc::clone(&env))?;
                 let mut param_objs = Vec::with_capacity(args.len());
@@ -66,7 +86,7 @@ impl Checker {
                     }),
                     _ => Err(TypeError::InvalidOperation {
                         operation: "type application".into(),
-                        typ: format!("{:?}", base),
+                        typ: format!("{}", base),
                     }),
                 }
             }
@@ -83,8 +103,7 @@ impl Checker {
                 {
                     let mut env = env.borrow_mut();
                     for (var, _) in binders {
-                        env.insert_bind(var.clone(), TypeObject::Kind(Kind::Star))
-                            .map_err(|_| TypeError::RedefinedVariable(var.clone()))?;
+                        env.insert_bind(var.clone(), TypeObject::Kind(Kind::Star))?;
                     }
                 }
                 let ty_body = Checker::resolve(&inner, Rc::clone(&env))?;
@@ -104,8 +123,7 @@ impl Checker {
                 let saved = env.borrow().clone();
                 {
                     let mut env = env.borrow_mut();
-                    env.insert_bind(param.clone(), param_kind.clone())
-                        .map_err(|_| TypeError::RedefinedVariable(param.clone()))?;
+                    env.insert_bind(param.clone(), param_kind.clone())?;
                 }
                 let ty_body = Checker::resolve(body, Rc::clone(&env))?;
                 *env.borrow_mut() = saved;
@@ -135,7 +153,6 @@ impl Checker {
         Checker { env }
     }
 
-    /// Top-level: check all statements, returning typed AST
     pub fn check(&self, program: &UnsafeProgram) -> Result<Vec<CheckedStmt>, TypeError> {
         program.iter().map(|s| self.check_stmt(s)).collect()
     }
@@ -147,6 +164,9 @@ impl Checker {
                 type_annotation,
                 value,
             } => {
+                if self.env.borrow().has_bind(name) {
+                    return Err(TypeError::RedefinedVariable(name.clone()));
+                }
                 let expected_type = Checker::resolve(type_annotation, Rc::clone(&self.env))?;
                 let checked_value = self.check_expr(value, &expected_type)?;
                 self.env
@@ -164,38 +184,93 @@ impl Checker {
                 variants,
                 kind_annotation,
             } => {
+                if self.env.borrow().has_bind(name) {
+                    return Err(TypeError::RedefinedVariable(name.clone()));
+                }
                 let kind_annotation = Checker::resolve(kind_annotation, Rc::clone(&self.env))?;
-                let checked_kind_annotation = Checker::resolve_kind(&kind_annotation)?;
-                self.env
-                    .borrow_mut()
-                    .insert_bind(name.clone(), kind_annotation.clone())?;
-                Ok(CheckedStmt::Type {
+                let expected_kind_annotation = Checker::resolve_kind(&kind_annotation)?;
+                let checked_kind_annotation = vec_to_kind(
+                    [
+                        params.iter().map(|_| Kind::Star).collect::<Vec<_>>(),
+                        vec![Kind::Star],
+                    ]
+                    .concat(),
+                );
+                if expected_kind_annotation != checked_kind_annotation {
+                    return Err(TypeError::KindMismatch {
+                        expected: format!("{}", expected_kind_annotation),
+                        found: format!("{}", checked_kind_annotation),
+                    });
+                }
+
+                let result = CheckedStmt::Type {
                     name: name.clone(),
                     params: params.clone(),
                     variants: {
                         let mut checked_variants = vec![];
                         for variant in variants {
                             checked_variants.push(match variant.clone().fields {
-                                TypeVariantFields::Unit => CheckedTypeVariant {
-                                    name: variant.clone().name,
-                                    fields: CheckedTypeVariantFields::Unit,
-                                },
-                                TypeVariantFields::Tuple(fields) => CheckedTypeVariant {
-                                    name: variant.clone().name,
-                                    fields: CheckedTypeVariantFields::Tuple(
-                                        fields
-                                            .iter()
-                                            .map(|f| Checker::resolve(f, Rc::clone(&self.env)))
-                                            .collect::<Result<Vec<_>, _>>()?,
-                                    ),
-                                },
+                                TypeVariantFields::Unit => {
+                                    self.env.borrow_mut().insert_bind(
+                                        variant.clone().name,
+                                        TypeObject::ADTInst {
+                                            name: name.clone(),
+                                            params: params
+                                                .iter()
+                                                .map(|_| TypeObject::Any)
+                                                .collect(),
+                                        },
+                                    )?;
+                                    CheckedTypeVariant {
+                                        name: variant.clone().name,
+                                        fields: CheckedTypeVariantFields::Unit,
+                                    }
+                                }
+                                TypeVariantFields::Tuple(fields) => {
+                                    let env = Env::extend(Rc::clone(&self.env));
+                                    for p in params {
+                                        Rc::clone(&env)
+                                            .borrow_mut()
+                                            .insert_bind(p.clone(), TypeObject::Any)?;
+                                    }
+                                    let checked_type_variant_fields = fields
+                                        .iter()
+                                        .map(|f| Checker::resolve(f, Rc::clone(&env)))
+                                        .collect::<Result<Vec<_>, _>>()?;
+                                    self.env.borrow_mut().insert_bind(
+                                        variant.clone().name,
+                                        TypeObject::Function(
+                                            Box::new(vec_to_type(
+                                                checked_type_variant_fields.clone(),
+                                            )),
+                                            Box::new(TypeObject::ADTInst {
+                                                name: name.clone(),
+                                                params: params
+                                                    .iter()
+                                                    .map(|_| TypeObject::Any)
+                                                    .collect(),
+                                            }),
+                                        ),
+                                    )?;
+                                    CheckedTypeVariant {
+                                        name: variant.clone().name,
+                                        fields: CheckedTypeVariantFields::Tuple(
+                                            checked_type_variant_fields,
+                                        ),
+                                    }
+                                }
                                 _ => unimplemented!("record type variant"),
                             });
                         }
                         checked_variants
                     },
                     kind_annotation: checked_kind_annotation,
-                })
+                };
+
+                self.env
+                    .borrow_mut()
+                    .insert_bind(name.clone(), kind_annotation.clone())?;
+                Ok(result)
             }
             Stmt::Expr(expression) => {
                 let checked_expression = self.infer_expr(expression)?;
@@ -296,21 +371,28 @@ impl Checker {
                 params,
                 body,
                 type_annotation,
-            } => Ok(CheckedExpr::Function {
-                params: params.clone(),
-                body: Box::new(
-                    Checker::new(CheckerEnv::extend(Rc::clone(&self.env))).check_expr(
-                        body,
-                        self.type_to_vec(&Checker::resolve(
-                            &type_annotation,
-                            Rc::clone(&self.env),
-                        )?)?
-                        .last()
-                        .unwrap(),
-                    )?,
-                ),
-                type_annotation: Checker::resolve(type_annotation, Rc::clone(&self.env))?,
-            }),
+            } => {
+                let env = CheckerEnv::extend(Rc::clone(&self.env));
+                let mut type_annotation = Checker::resolve(type_annotation, Rc::clone(&self.env))?;
+                let mut type_vec = type_to_vec(&type_annotation);
+                let mut index = 0;
+                for p in params {
+                    env.borrow_mut()
+                        .insert_bind(p.clone(), type_vec[index].clone())?;
+                    index += 1;
+                }
+                let checked_body = Checker::new(env).check_expr(body, type_vec.last().unwrap())?;
+                if type_vec.last().unwrap() == &TypeObject::Any {
+                    let last = type_vec.len() - 1;
+                    type_vec[last] = checked_body.get_type();
+                    type_annotation = vec_to_type(type_vec);
+                }
+                Ok(CheckedExpr::Function {
+                    params: params.clone(),
+                    body: Box::new(checked_body),
+                    type_annotation,
+                })
+            }
             Expr::If {
                 condition,
                 then_branch,
@@ -349,14 +431,14 @@ impl Checker {
             }
             Expr::Match { expr, cases } => {
                 let checked_matched = self.infer_expr(expr)?;
-                let mut result_type = TypeObject::Unknown;
+                let mut result_type = TypeObject::Any;
                 let mut checked_cases = Vec::new();
                 for case in cases {
                     let pattern_type = self.infer_pattern(&case.pattern)?;
                     self.unify(&checked_matched.get_type(), &pattern_type, "match pattern")?;
                     let checked_guard = self.check_expr(&case.guard, &TypeObject::Bool)?;
                     let checked_body = self.infer_expr(&case.body)?;
-                    if result_type == TypeObject::Unknown {
+                    if result_type == TypeObject::Any {
                         result_type = checked_body.get_type();
                     } else {
                         self.unify(&result_type, &checked_body.get_type(), "match body")?;
@@ -397,15 +479,12 @@ impl Checker {
         expected_type: &TypeObject,
     ) -> Result<CheckedExpr, TypeError> {
         let node = self.infer_expr(expression)?;
-        if &node.get_type() == expected_type {
-            Ok(node)
-        } else {
-            Err(TypeError::TypeMismatch {
-                expected: expected_type.to_string(),
-                found: node.get_type().to_string(),
-                context: format!("{:?}", expression),
-            })
-        }
+        self.unify(
+            expected_type,
+            &node.get_type(),
+            format!("{:?}", expression).as_str(),
+        )?;
+        Ok(node)
     }
 
     fn unify(
@@ -414,14 +493,13 @@ impl Checker {
         actual: &TypeObject,
         context: &str,
     ) -> Result<TypeObject, TypeError> {
-        use TypeObject::*;
         match (expected, actual) {
-            (TypeObject::Unknown, t) | (t, TypeObject::Unknown) => Ok(t.clone()),
-            (TypeObject::Function(ea, eb), Function(aa, ab)) => {
+            (TypeObject::Function(ea, eb), TypeObject::Function(aa, ab)) => {
                 let p = self.unify(ea, aa, context)?;
                 let r = self.unify(eb, ab, context)?;
-                Ok(Function(Box::new(p), Box::new(r)))
+                Ok(TypeObject::Function(Box::new(p), Box::new(r)))
             }
+            (TypeObject::Any, t) | (t, TypeObject::Any) => Ok(t.clone()),
             (TypeObject::ADTDef { name: en, .. }, TypeObject::ADTDef { name: an, .. })
                 if en == an =>
             {
@@ -450,7 +528,7 @@ impl Checker {
                         Int => Ok(Int),
                         Float => Ok(Float),
                         _ => Err(TypeError::InvalidOperation {
-                            operation: format!("arith {:?}", op),
+                            operation: format!("arith {}", op),
                             typ: l.to_string(),
                         }),
                     }
@@ -471,7 +549,7 @@ impl Checker {
                     Ok(TypeObject::Bool)
                 } else {
                     Err(TypeError::InvalidOperation {
-                        operation: format!("cmp {:?}", op),
+                        operation: format!("cmp {}", op),
                         typ: l.to_string(),
                     })
                 }
@@ -488,7 +566,7 @@ impl Checker {
                 }
             }
             _ => Err(TypeError::InvalidOperation {
-                operation: format!("infix {:?}", op),
+                operation: format!("infix {}", op),
                 typ: l.to_string(),
             }),
         }
@@ -506,7 +584,7 @@ impl Checker {
             },
             Token::Not if sub == &TypeObject::Bool => Ok(TypeObject::Bool),
             _ => Err(TypeError::InvalidOperation {
-                operation: format!("prefix {:?}", op),
+                operation: format!("prefix {}", op),
                 typ: sub.to_string(),
             }),
         }
@@ -514,7 +592,7 @@ impl Checker {
 
     fn infer_pattern(&self, pattern: &Pattern) -> Result<TypeObject, TypeError> {
         match pattern {
-            Pattern::Ident(n) => Ok(self.env.borrow().get_bind(n).unwrap_or(TypeObject::Unknown)),
+            Pattern::Ident(n) => Ok(self.env.borrow().get_bind(n).unwrap_or(TypeObject::Any)),
             Pattern::Literal(l) => Checker::infer_literal(l),
             Pattern::ADTConstructor { name, .. } => {
                 let t = self
@@ -548,17 +626,6 @@ impl Checker {
                 }
                 Err(TypeError::UndefinedVariable(name.clone()))
             }
-        }
-    }
-
-    fn type_to_vec(&self, func_type: &TypeObject) -> Result<Vec<TypeObject>, TypeError> {
-        match func_type {
-            TypeObject::Function(param_type, return_type) => Ok([
-                self.type_to_vec(param_type)?,
-                self.type_to_vec(return_type)?,
-            ]
-            .concat()),
-            _ => Ok(vec![func_type.clone()]),
         }
     }
 }

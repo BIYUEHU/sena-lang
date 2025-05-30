@@ -37,6 +37,37 @@ pub fn get_arrow_type(params: Vec<TypeExpr>, return_type: TypeExpr) -> TypeExpr 
     }
 }
 
+pub fn type_to_vec(func_type: &TypeObject) -> Vec<TypeObject> {
+    match func_type {
+        TypeObject::Function(param_type, return_type) => {
+            [type_to_vec(param_type), type_to_vec(return_type)].concat()
+        }
+        _ => vec![func_type.clone()],
+    }
+}
+
+pub fn vec_to_type(vec_type: Vec<TypeObject>) -> TypeObject {
+    if vec_type.len() == 1 {
+        vec_type[0].clone()
+    } else {
+        TypeObject::Function(
+            Box::new(vec_to_type(vec_type[0..vec_type.len() - 1].to_vec())),
+            Box::new(vec_to_type(vec_type[vec_type.len() - 1..].to_vec())),
+        )
+    }
+}
+
+pub fn vec_to_kind(vec_kind: Vec<Kind>) -> Kind {
+    if vec_kind.len() == 1 {
+        vec_kind[0].clone()
+    } else {
+        Kind::Arrow(
+            Box::new(vec_to_kind(vec_kind[0..vec_kind.len() - 1].to_vec())),
+            Box::new(vec_to_kind(vec_kind[vec_kind.len() - 1..].to_vec())),
+        )
+    }
+}
+
 pub enum RunningMode {
     Lexer,
     Parser,
@@ -148,26 +179,26 @@ pub fn to_checked_expr(expr: Expr) -> CheckedExpr {
     match expr {
         Expr::Ident(name) => CheckedExpr::Ident {
             value: name,
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::Internal(name) => CheckedExpr::Internal {
             value: name,
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::Literal(lit) => CheckedExpr::Literal {
             value: lit,
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::Prefix(op, sub) => CheckedExpr::Prefix {
             op,
             expr: Box::new(to_checked_expr(*sub)),
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::Infix(op, left, right) => CheckedExpr::Infix {
             op,
             left: Box::new(to_checked_expr(*left)),
             right: Box::new(to_checked_expr(*right)),
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::Call { callee, params } => CheckedExpr::Call {
             callee: Box::new(to_checked_expr(*callee)),
@@ -175,12 +206,12 @@ pub fn to_checked_expr(expr: Expr) -> CheckedExpr {
                 .into_iter()
                 .map(|param| to_checked_expr(param))
                 .collect::<Vec<_>>(),
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::Function { params, body, .. } => CheckedExpr::Function {
             params,
             body: Box::new(to_checked_expr(*body)),
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::If {
             condition,
@@ -190,7 +221,7 @@ pub fn to_checked_expr(expr: Expr) -> CheckedExpr {
             condition: Box::new(to_checked_expr(*condition)),
             then_branch: Box::new(to_checked_expr(*then_branch)),
             else_branch: Box::new(to_checked_expr(*else_branch)),
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::Match { expr, cases } => CheckedExpr::Match {
             expr: Box::new(to_checked_expr(*expr)),
@@ -204,7 +235,7 @@ pub fn to_checked_expr(expr: Expr) -> CheckedExpr {
                     })
                     .collect::<Vec<_>>()
             },
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::LetIn {
             name, value, body, ..
@@ -212,14 +243,14 @@ pub fn to_checked_expr(expr: Expr) -> CheckedExpr {
             name,
             value: Box::new(to_checked_expr(*value)),
             body: Box::new(to_checked_expr(*body)),
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
         Expr::Block(stmts) => CheckedExpr::Block {
             stmts: stmts
                 .into_iter()
                 .map(|stmt| to_checked_stmt(stmt))
                 .collect::<Vec<_>>(),
-            type_annotation: TypeObject::Unknown,
+            type_annotation: TypeObject::Any,
         },
     }
 }
@@ -234,7 +265,7 @@ pub fn to_checked_stmt(stmt: Stmt) -> CheckedStmt {
         } => CheckedStmt::Let {
             name: name.clone(),
             type_annotation: Checker::resolve(&type_annotation, Rc::clone(&env))
-                .unwrap_or(TypeObject::Unknown),
+                .unwrap_or(TypeObject::Any),
             value: to_checked_expr(*value),
         },
         Stmt::Type {
@@ -246,7 +277,7 @@ pub fn to_checked_stmt(stmt: Stmt) -> CheckedStmt {
             name: name.clone(),
             params: params.clone(),
             kind_annotation: Checker::resolve_kind(
-                &Checker::resolve(&kind_annotation, Rc::clone(&env)).unwrap_or(TypeObject::Unknown),
+                &Checker::resolve(&kind_annotation, Rc::clone(&env)).unwrap_or(TypeObject::Any),
             )
             .unwrap_or(Kind::Star),
             variants: {
@@ -264,7 +295,7 @@ pub fn to_checked_stmt(stmt: Stmt) -> CheckedStmt {
                                     .iter()
                                     .map(|f| {
                                         Checker::resolve(f, Rc::clone(&env))
-                                            .unwrap_or(TypeObject::Unknown)
+                                            .unwrap_or(TypeObject::Any)
                                     })
                                     .collect::<Vec<_>>(),
                             ),

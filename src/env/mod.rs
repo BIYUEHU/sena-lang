@@ -5,13 +5,13 @@ use crate::parser::ast::Kind;
 use error::EnvError;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 pub mod error;
 
 #[derive(Debug, Clone)]
 pub struct Env<T: Clone> {
-    pub parent: Option<Rc<RefCell<Env<T>>>>,
+    pub parent: Option<Weak<RefCell<Env<T>>>>,
     pub binds: HashMap<String, T>,
 }
 
@@ -40,7 +40,7 @@ impl<T: Clone> Env<T> {
 
     pub fn extend(parent: Rc<RefCell<Env<T>>>) -> Rc<RefCell<Env<T>>> {
         Rc::new(RefCell::new(Env {
-            parent: Some(parent),
+            parent: Some(Rc::downgrade(&parent)),
             binds: HashMap::new(),
         }))
     }
@@ -62,7 +62,11 @@ impl<T: Clone> Env<T> {
         if let Some(bind) = self.get_own_bind(name) {
             Some(bind)
         } else if let Some(ref parent) = self.parent {
-            parent.borrow().get_bind(name)
+            if let Some(parent) = parent.upgrade() {
+                parent.borrow().get_bind(name)
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -75,6 +79,20 @@ impl<T: Clone> Env<T> {
             None
         }
     }
+
+    pub fn has_bind(&self, name: &str) -> bool {
+        if self.get_own_bind(name).is_some() {
+            true
+        } else if let Some(ref parent) = self.parent {
+            if let Some(parent) = parent.upgrade() {
+                parent.borrow().has_bind(name)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
 }
 
 pub fn new_checker_env() -> Rc<RefCell<CheckerEnv>> {
@@ -82,7 +100,8 @@ pub fn new_checker_env() -> Rc<RefCell<CheckerEnv>> {
     let env = Rc::clone(&env_origin);
     let mut env = env.borrow_mut();
     for t in PRIMIVE_TYPES.iter() {
-        env.insert_bind(t.to_string(), t.clone()).unwrap();
+        env.insert_bind(t.to_string(), TypeObject::Kind(Kind::Star))
+            .unwrap(); /* <name, type> */
     }
     env.insert_bind(
         "print".to_string(),
@@ -110,14 +129,13 @@ pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
     for t in PRIMIVE_TYPES.iter() {
         let name = t.to_string();
         env.insert_bind(
-            // name.eq("*").then(|| "Kind".to_string()).unwrap_or(name),
             name,
-            Object::Type {
+            Object::Kind {
                 value: t.clone(),
                 kind_annotation: Kind::Star,
             },
         )
-        .unwrap();
+        .unwrap(); /* <name, value: type> */
     }
     env.insert_bind(
         "print".to_string(),

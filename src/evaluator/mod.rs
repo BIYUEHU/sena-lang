@@ -149,20 +149,20 @@ impl Evaluator {
                     Evaluator::new(local_env).eval_expr(&body.into())
                 }
             }
-            Object::Type {
+            Object::Kind {
                 value: TypeObject::ADTDef { name, params, .. },
                 ..
             } => {
                 if params.len() == args.len() {
                     let mut real_params = vec![];
                     for arg in args {
-                        if let Object::Type { value, .. } = arg {
+                        if let Object::Kind { value, .. } = arg {
                             real_params.push(value)
                         } else {
                             return Err(EvalError::TypeMismatch);
                         }
                     }
-                    Ok(Object::Type {
+                    Ok(Object::Kind {
                         value: TypeObject::ADTInst {
                             name: name.clone(),
                             params: real_params,
@@ -198,7 +198,7 @@ impl Evaluator {
                 /* Type Constructor */
                 env.insert_bind(
                     name.clone(),
-                    Object::Type {
+                    Object::Kind {
                         value: TypeObject::ADTDef {
                             name: name.clone(),
                             params: params.clone(),
@@ -210,15 +210,12 @@ impl Evaluator {
 
                 // TODO: relate value constructors with params of type constructor, instead of `Unknown`
                 let adt_type_annotation = {
-                    let real_params = params
-                        .iter()
-                        .map(|_| TypeObject::Unknown)
-                        .collect::<Vec<_>>();
+                    let real_params = params.iter().map(|_| TypeObject::Any).collect::<Vec<_>>();
                     match env
                         .get_bind(name)
                         .ok_or(EvalError::UndefinedVariable(name.to_string()))?
                     {
-                        Object::Type { value: type_, .. } => match type_ {
+                        Object::Kind { value: type_, .. } => match type_ {
                             TypeObject::ADTDef { params, name, .. } => {
                                 if params.len() == real_params.len() {
                                     Ok(TypeObject::ADTInst {
@@ -376,11 +373,11 @@ impl Evaluator {
                     },
                     Token::ThinArrow => {
                         if let (
-                            Object::Type { value: param, .. },
-                            Object::Type { value: ret, .. },
+                            Object::Kind { value: param, .. },
+                            Object::Kind { value: ret, .. },
                         ) = (left_val, right_val)
                         {
-                            Ok(Object::Type {
+                            Ok(Object::Kind {
                                 value: TypeObject::Function(Box::new(param), Box::new(ret)),
                                 kind_annotation: Kind::Star,
                             })

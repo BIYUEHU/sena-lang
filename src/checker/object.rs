@@ -11,9 +11,9 @@ pub enum TypeObject {
     Char,
     Bool,
     Unit,
-    Unknown,
     Any,
     Kind(Kind),
+    Var(String),
     Function(Box<TypeObject>, Box<TypeObject>),
     ADTDef {
         name: String,
@@ -49,7 +49,7 @@ impl TypeObject {
     }
 }
 
-pub static PRIMIVE_TYPES: [TypeObject; 9] = [
+pub static PRIMIVE_TYPES: [TypeObject; 8] = [
     TypeObject::Kind(Kind::Star),
     TypeObject::Int,
     TypeObject::Float,
@@ -57,7 +57,6 @@ pub static PRIMIVE_TYPES: [TypeObject; 9] = [
     TypeObject::Char,
     TypeObject::Bool,
     TypeObject::Unit,
-    TypeObject::Unknown,
     TypeObject::Any,
 ];
 
@@ -165,7 +164,7 @@ impl Display for TypeObject {
             TypeObject::Char => write!(f, "Char"),
             TypeObject::Bool => write!(f, "Bool"),
             TypeObject::Unit => write!(f, "Unit"),
-            TypeObject::Unknown => write!(f, "Unknown"),
+            TypeObject::Var(name) => write!(f, "Var({})", name),
             TypeObject::Any => write!(f, "Any"),
             // TypeObject::Array(t) => write!(f, "[{}]", t),
             TypeObject::Function(param, ret) => {

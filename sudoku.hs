@@ -1,5 +1,3 @@
--- Sudoku Generator and Solver in Haskell with Safe Indexing and Explicit Recursion
-
 module Sudoku where
 
 import Data.Maybe (mapMaybe)
@@ -20,11 +18,11 @@ timeSafeIndex (_ : xs) n
 
 -- Get a row safely
 getRow :: Grid -> Int -> Maybe [Int]
-getRow g r = timeSafeIndex g r
+getRow = timeSafeIndex
 
 -- Get a column safely
 getCol :: Grid -> Int -> [Int]
-getCol g c = mapMaybe (\row -> timeSafeIndex row c) g
+getCol g c = mapMaybe (`timeSafeIndex` c) g
 
 -- Get the 3x3 box containing (r,c)
 getBox :: Grid -> (Int, Int) -> [Int]
@@ -63,7 +61,6 @@ findEmpty g = findRow g 0
       | cell == 0 = Just c
       | otherwise = findCol cells r (c + 1)
 
--- Update grid at position with a number using explicit recursion
 updateGrid :: Grid -> (Int, Int) -> Int -> Grid
 updateGrid g (tr, tc) n = updateRows g 0
   where
@@ -73,12 +70,11 @@ updateGrid g (tr, tc) n = updateRows g 0
        in newRow : updateRows rows (r + 1)
     updateCols [] _ = []
     updateCols (cell : cells) c =
-      let newCell = if (r == tr && c == tc) then n else cell
+      let newCell = if r == tr && c == tc then n else cell
        in newCell : updateCols cells (c + 1)
       where
         r = tr -- ensure correct row index in scope
 
--- Backtracking solver: returns a solved grid or Nothing
 solve :: Grid -> Maybe Grid
 solve g = case findEmpty g of
   Nothing -> Just g
@@ -93,11 +89,9 @@ solve g = case findEmpty g of
                 Nothing -> tryNumbers xs
         | otherwise = tryNumbers xs
 
--- Generate a complete filled grid
 generateFull :: Maybe Grid
 generateFull = solve emptyGrid
 
--- Remove k cells to create a puzzle (simple non-unique strategy)
 digHoles :: Grid -> Int -> Grid
 digHoles g 0 = g
 digHoles g k = foldl removeCell g (take k (gen 0 0))
@@ -107,14 +101,12 @@ digHoles g k = foldl removeCell g (take k (gen 0 0))
     gen r c = (r, c) : gen r (c + 1)
     removeCell gr pos = updateGrid gr pos 0
 
--- Generate a puzzle with given number of clues
 generatePuzzle :: Int -> Maybe Grid
 generatePuzzle clues = do
   full <- generateFull
   let removals = 81 - max 17 (min clues 81)
   return (digHoles full removals)
 
--- Example main to print puzzle and solution
 main :: IO ()
 main = case generatePuzzle 30 of
   Nothing -> putStrLn "Failed to generate puzzle"

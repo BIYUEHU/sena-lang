@@ -29,18 +29,12 @@ pub enum TypeExpr {
     Con(String),
     App(Box<TypeExpr>, Vec<TypeExpr>), // Vec -> Box
     Arrow(Box<TypeExpr>, Box<TypeExpr>),
-    Forall(Vec<(String, TypeExpr)>, Box<TypeExpr>),
+    Forall(Vec<(String, Kind)>, Box<TypeExpr>),
     // DepFn(String, Box<TypeExpr>, Box<TypeExpr>),
     Lambda((String, Box<TypeExpr>), Box<TypeExpr>),
     // Constraint(String, Vec<TypeExpr>),
     Literal(Literal),
     Kind(Kind),
-}
-
-impl Default for TypeExpr {
-    fn default() -> Self {
-        TypeExpr::Con("Unknown".into())
-    }
 }
 
 impl TryFrom<Expr> for TypeExpr {
@@ -90,7 +84,7 @@ impl Display for TypeExpr {
                     write!(f, "{} -> {}", t1, t2)
                 }
             }
-            TypeExpr::Literal(l) => write!(f, "Literal({:?})", l),
+            TypeExpr::Literal(l) => write!(f, "Literal({})", l),
             TypeExpr::Forall(vs, t) => {
                 write!(
                     f,
@@ -120,9 +114,9 @@ pub enum Expr {
         params: Vec<Expr>,
     },
     Function {
-        params: Vec<String>,
+        params: Vec<(String, Option<TypeExpr>)>,
         body: Box<Expr>,
-        type_annotation: TypeExpr,
+        return_type: Option<TypeExpr>,
     },
     If {
         condition: Box<Expr>,
@@ -135,7 +129,7 @@ pub enum Expr {
     },
     LetIn {
         name: String,
-        type_annotation: TypeExpr,
+        type_annotation: Option<TypeExpr>,
         value: Box<Expr>,
         body: Box<Expr>,
     },
@@ -155,17 +149,33 @@ pub enum Literal {
     Unit,
 }
 
+impl Display for Literal {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Literal::String(s) => write!(f, "\"{}\"", s),
+            Literal::Char(c) => write!(f, "'{}'", c),
+            Literal::Int(i) => write!(f, "{}", i),
+            Literal::Float(fl) => write!(f, "{}", fl),
+            Literal::Bool(b) => write!(f, "{}", b),
+            Literal::Array(_) => {
+                write!(f, "[...]")
+            }
+            Literal::Unit => write!(f, "()"),
+        }
+    }
+}
+
 #[derive(PartialEq, Clone, Debug)]
 pub enum Stmt {
     Let {
         name: String,
-        type_annotation: TypeExpr,
+        type_annotation: Option<TypeExpr>,
         value: Box<Expr>,
     },
     Type {
         name: String,
         params: Vec<String>,
-        kind_annotation: TypeExpr,
+        kind_annotation: Option<TypeExpr>,
         variants: Vec<TypeVariant>,
     },
     ImportAll {

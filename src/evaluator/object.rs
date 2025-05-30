@@ -39,7 +39,7 @@ pub enum Object {
         fields: Vec<Object>,
         type_annotation: TypeObject,
     },
-    Type {
+    Kind {
         value: TypeObject,
         kind_annotation: Kind,
     },
@@ -125,7 +125,7 @@ impl Checked for Object {
                 params: vec![elements
                     .first()
                     .map(|e| e.get_type().clone())
-                    .unwrap_or(TypeObject::Unknown)],
+                    .unwrap_or(TypeObject::Any)],
             },
             Object::Function {
                 type_annotation, ..
@@ -133,7 +133,7 @@ impl Checked for Object {
             Object::ADTValue {
                 type_annotation, ..
             } => type_annotation.clone(),
-            Object::Type {
+            Object::Kind {
                 kind_annotation, ..
             } => TypeObject::Kind(kind_annotation.clone()),
             Object::Unit => TypeObject::Unit,
@@ -156,7 +156,7 @@ impl Display for Object {
             Object::Function { .. } => {
                 write!(f, "Function({})", self.type_info())
             }
-            Object::Type { value, .. } => write!(f, "Kind({})", value),
+            Object::Kind { value, .. } => write!(f, "Kind({})", value),
             Object::ADTValue {
                 variant,
                 fields,
@@ -193,7 +193,7 @@ impl Display for Object {
             //             .join(", ")
             //     )
             // }
-            // Object::TypeConstructor { .. } => {
+            // Object::KindConstructor { .. } => {
             //     write!(f, "TypeConstructor({})", self.type_info())
             // }
             Object::Unit => write!(f, "()"),
@@ -214,7 +214,7 @@ impl PrettyPrint for Object {
                 format!("[{}]", elems.join(", "))
             }
             Object::Function { .. } => "<function>".to_string(),
-            Object::Type { value, .. } => value.to_string(),
+            Object::Kind { value, .. } => value.to_string(),
             Object::ADTValue {
                 variant, fields, ..
             } => {
@@ -233,7 +233,7 @@ impl PrettyPrint for Object {
                 }
             }
             // Object::ADTConstructor { .. } => "<adt_constructor>".to_string(),
-            // Object::TypeConstructor { .. } => "<type_constructor>".to_string(),
+            // Object::KindConstructor { .. } => "<type_constructor>".to_string(),
             Object::Unit => "()".to_string(),
         }
     }
@@ -247,7 +247,7 @@ impl TypeInfo for Object {
             Object::String(_) => "String".to_string(),
             Object::Char(_) => "Char".to_string(),
             Object::Bool(_) => "Bool".to_string(),
-            Object::Type {
+            Object::Kind {
                 kind_annotation, ..
             } => kind_annotation.to_string(),
             Object::Array(arr) => {
@@ -277,7 +277,7 @@ impl TypeInfo for Object {
             //         .join(" -> "),
             //     format_type_name(type_name.clone(), type_params.clone()),
             // ),
-            // Object::TypeConstructor { type_params, .. } => format!(
+            // Object::KindConstructor { type_params, .. } => format!(
             //     "{} -> Kind",
             //     type_params
             //         .iter()

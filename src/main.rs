@@ -8,6 +8,18 @@ use std::io::Write;
 
 const PROMPT: &str = ">> ";
 
+// use std::thread;
+
+// fn main() {
+//     thread::Builder::new()
+//         .name("main_with_big_stack".into())
+//         .stack_size(32 * 1024 * 120024) // 32MB
+//         .spawn(main_with_stack)
+//         .unwrap()
+//         .join()
+//         .unwrap();
+// }
+
 fn main() {
     println!("Welcome to the Mihama programming language REPL!");
     println!("Input '.read <file>' to parse from a file");
@@ -17,7 +29,7 @@ fn main() {
     );
 
     let mut input = String::new();
-    let mut mode = RunningMode::UnsafeEvaluator;
+    let mut mode = RunningMode::Evaluator;
     let mut env = new_evaluator_env();
     let mut evaluator = Evaluator::new(env);
     let mut checker = Checker::new(new_checker_env());

@@ -199,7 +199,7 @@ impl Parser {
         })
     }
 
-    fn collect_bindings(&mut self) -> Result<(String, TypeExpr), ParseError> {
+    fn collect_bindings(&mut self) -> Result<(String, Option<TypeExpr>), ParseError> {
         self.next_token();
         let name = match &self.current_token {
             Token::Ident(name) => name,
@@ -210,9 +210,9 @@ impl Parser {
         let type_annotation = if self.next_token_is(&Token::Colon) {
             self.next_token();
             self.next_token();
-            self.type_expression()?
+            Some(self.type_expression()?)
         } else {
-            TypeExpr::default()
+            None
         };
 
         self.next_token_consume(&Token::Assign, "'=' after identifier name")?;
@@ -241,12 +241,12 @@ impl Parser {
             _ => return Err(self.error_unexpected_token("identifier")),
         };
 
-        let mut kind_annotation = if self.next_token_is(&Token::Colon) {
+        let kind_annotation = if self.next_token_is(&Token::Colon) {
             self.next_token();
             self.next_token();
-            self.type_expression()?
+            Some(self.type_expression()?)
         } else {
-            TypeExpr::Con("Unknown".to_string())
+            None
         };
 
         self.next_token_consume(&Token::Assign, "'=' after type name")?;
@@ -261,7 +261,7 @@ impl Parser {
             vec![]
         };
 
-        if kind_annotation == TypeExpr::Con("Unknown".to_string()) {
+        /*     if kind_annotation == TypeExpr::Con("Any".to_string()) {
             kind_annotation = if params.is_empty() {
                 TypeExpr::Kind(Kind::Star)
             } else {
@@ -270,11 +270,10 @@ impl Parser {
                     TypeExpr::Kind(Kind::Star),
                 )
             };
-        }
+        } */
 
         let variants = self.type_variants()?;
 
-        // TODO use lambda typeexpr to explain type annotations
         Ok(Stmt::Type {
             name: name.clone(),
             params,
@@ -517,37 +516,35 @@ impl Parser {
     fn try_function(&mut self) -> Result<Expr, ParseError> {
         let params = {
             let mut params = vec![];
-            self.next_token(); // Consume '('
+            self.next_token();
 
             if self.current_token == Token::RightParen {
-                self.next_token(); // Consume ')'
-                params // Allow empty parameter list for flexibility
+                self.next_token();
+                params
             } else {
                 loop {
-                    // Expect an identifier for the parameter name
                     let name = match &self.current_token {
                         Token::Ident(name) => name.clone(),
                         _ => return Err(self.error_unexpected_token("identifier")),
                     };
                     self.next_token();
 
-                    // Check for optional type annotation
-                    let type_annotation = Box::new(if self.current_token == Token::Colon {
-                        self.next_token();
-                        let type_expr = self.type_expression()?;
-                        self.next_token();
-                        type_expr
-                    } else {
-                        TypeExpr::default()
-                    });
+                    params.push((
+                        name,
+                        if self.current_token == Token::Colon {
+                            self.next_token();
+                            let type_expr = self.type_expression()?;
+                            self.next_token();
+                            Some(type_expr)
+                        } else {
+                            None
+                        },
+                    ));
 
-                    params.push((name, type_annotation));
-
-                    // Check for comma or end of parameter list
                     if self.current_token == Token::Comma {
                         self.next_token();
                     } else if self.current_token == Token::RightParen {
-                        self.next_token(); // Consume ')'
+                        self.next_token();
                         break;
                     } else {
                         return Err(self.error_unexpected_token("',' or ')'"));
@@ -567,9 +564,9 @@ impl Parser {
             self.next_token();
             let type_expr = self.type_expression()?;
             self.next_token();
-            type_expr
+            Some(type_expr)
         } else {
-            TypeExpr::default()
+            None
         };
 
         if self.current_token != Token::Arrow {
@@ -577,27 +574,10 @@ impl Parser {
         }
         self.next_token();
 
-        let body = Box::new(self.expression(Precedence::Lowest)?);
-        /*
-        [Int, String, Int]
-
-        Int -> String -> Int
-        -> (Int, -> (String -> Int))
-        */
         Ok(Expr::Function {
-            params: params
-                .clone()
-                .into_iter()
-                .map(|(name, _)| name)
-                .collect::<Vec<_>>(),
-            body,
-            type_annotation: get_arrow_type(
-                params
-                    .into_iter()
-                    .map(|(_, type_annotation)| *type_annotation)
-                    .collect(),
-                return_type,
-            ),
+            params,
+            body: Box::new(self.expression(Precedence::Lowest)?),
+            return_type,
         })
     }
 
@@ -782,7 +762,7 @@ mod tests {
             parse("let x = 1"),
             vec![Stmt::Let {
                 name: "x".to_string(),
-                type_annotation: TypeExpr::default(),
+                type_annotation: None,
                 value: Box::new(Expr::Literal(Literal::Int(1))),
             }]
         );
@@ -790,7 +770,7 @@ mod tests {
             parse("let x: int = 1"),
             vec![Stmt::Let {
                 name: "x".to_string(),
-                type_annotation: TypeExpr::Con("int".to_string()),
+                type_annotation: Some(TypeExpr::Con("int".to_string())),
                 value: Box::new(Expr::Literal(Literal::Int(1))),
             }]
         );
@@ -803,7 +783,7 @@ mod tests {
             vec![Stmt::Type {
                 name: "List".to_string(),
                 params: vec![],
-                kind_annotation: TypeExpr::Kind(Kind::Star),
+                kind_annotation: Some(TypeExpr::Kind(Kind::Star)),
                 variants: vec![
                     TypeVariant {
                         name: "Nil".to_string(),
@@ -825,10 +805,7 @@ mod tests {
             vec![Stmt::Type {
                 name: "List".to_string(),
                 params: vec!["T".to_string()],
-                kind_annotation: TypeExpr::Arrow(
-                    Box::new(TypeExpr::Kind(Kind::Star)),
-                    Box::new(TypeExpr::Kind(Kind::Star))
-                ),
+                kind_annotation: None,
                 variants: vec![
                     TypeVariant {
                         name: "Nil".to_string(),
@@ -853,7 +830,7 @@ mod tests {
             vec![Stmt::Type {
                 name: "Color".to_string(),
                 params: vec![],
-                kind_annotation: TypeExpr::Con("Kind".to_string()),
+                kind_annotation: Some(TypeExpr::Con("Kind".to_string())),
                 variants: vec![
                     TypeVariant {
                         name: "Red".to_string(),
@@ -899,7 +876,7 @@ mod tests {
                 only_abstract: false,
                 body: Box::new(Stmt::Let {
                     name: "x".to_string(),
-                    type_annotation: TypeExpr::default(),
+                    type_annotation: None,
                     value: Box::new(Expr::Literal(Literal::Int(1))),
                 })
             }]
@@ -912,7 +889,7 @@ mod tests {
                 body: Box::new(Stmt::Type {
                     name: "Nat".to_string(),
                     params: vec![],
-                    kind_annotation: TypeExpr::Kind(Kind::Star),
+                    kind_annotation: Some(TypeExpr::Kind(Kind::Star)),
                     variants: vec![
                         TypeVariant {
                             name: "Zero".to_string(),
@@ -946,11 +923,8 @@ mod tests {
                     Box::new(Expr::Ident("y".to_string())),
                 )),
                 type_annotation: TypeExpr::Arrow(
-                    Box::new(TypeExpr::default()),
-                    Box::new(TypeExpr::Arrow(
-                        Box::new(TypeExpr::default()),
-                        Box::new(TypeExpr::default())
-                    ))
+                    Box::new(None),
+                    Box::new(TypeExpr::Arrow(Box::new(None), Box::new(None)))
                 ),
             }),
         );
@@ -968,7 +942,7 @@ mod tests {
                     Box::new(TypeExpr::Con("Int".to_string())),
                     Box::new(TypeExpr::Arrow(
                         Box::new(TypeExpr::Con("Int".to_string())),
-                        Box::new(TypeExpr::default())
+                        Box::new(None)
                     ))
                 )
             }),
@@ -985,9 +959,9 @@ mod tests {
                     Box::new(Expr::Ident("y".to_string())),
                 )),
                 type_annotation: TypeExpr::Arrow(
-                    Box::new(TypeExpr::default()),
+                    Box::new(None),
                     Box::new(TypeExpr::Arrow(
-                        Box::new(TypeExpr::default()),
+                        Box::new(None),
                         Box::new(TypeExpr::Con("Int".to_string()))
                     ))
                 )
@@ -999,10 +973,7 @@ mod tests {
             expr(Expr::Function {
                 params: vec!["x".to_string()],
                 body: Box::new(Expr::Ident("x".to_string())),
-                type_annotation: TypeExpr::Arrow(
-                    Box::new(TypeExpr::default()),
-                    Box::new(TypeExpr::default())
-                ),
+                type_annotation: TypeExpr::Arrow(Box::new(None), Box::new(None)),
             }),
         );
     }
@@ -1138,7 +1109,7 @@ mod tests {
             parse("let x = 1 in x + 2"),
             expr(Expr::LetIn {
                 name: "x".to_string(),
-                type_annotation: TypeExpr::default(),
+                type_annotation: None,
                 value: Box::new(Expr::Literal(Literal::Int(1))),
                 body: Box::new(Expr::Infix(
                     Token::Plus,
@@ -1193,7 +1164,7 @@ mod tests {
             expr(Expr::Block(vec![
                 Stmt::Let {
                     name: "x".to_string(),
-                    type_annotation: TypeExpr::default(),
+                    type_annotation: None,
                     value: Box::new(Expr::Literal(Literal::Int(1))),
                 },
                 Stmt::Expr(Expr::Call {
