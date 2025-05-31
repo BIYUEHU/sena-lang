@@ -1,10 +1,5 @@
-use crate::{
-    lexer::token::{Token, TokenData},
-    utils::get_arrow_type,
-};
-use ast::{
-    Expr, Kind, Literal, MatchCase, Pattern, Stmt, TypeExpr, TypeVariant, TypeVariantFields,
-};
+use crate::lexer::token::{Token, TokenData};
+use ast::{Expr, Literal, MatchCase, Pattern, Stmt, TypeExpr, TypeVariant, TypeVariantFields};
 use error::ParseError;
 use precedence::Precedence;
 
@@ -783,7 +778,7 @@ mod tests {
             vec![Stmt::Type {
                 name: "List".to_string(),
                 params: vec![],
-                kind_annotation: Some(TypeExpr::Kind(Kind::Star)),
+                kind_annotation: None,
                 variants: vec![
                     TypeVariant {
                         name: "Nil".to_string(),
@@ -889,7 +884,7 @@ mod tests {
                 body: Box::new(Stmt::Type {
                     name: "Nat".to_string(),
                     params: vec![],
-                    kind_annotation: Some(TypeExpr::Kind(Kind::Star)),
+                    kind_annotation: None,
                     variants: vec![
                         TypeVariant {
                             name: "Zero".to_string(),
@@ -916,35 +911,29 @@ mod tests {
         assert_eq!(
             parse("(x, y) => x + y"),
             expr(Expr::Function {
-                params: vec!["x".to_string(), "y".to_string(),],
+                params: vec![("x".to_string(), None), ("y".to_string(), None),],
                 body: Box::new(Expr::Infix(
                     Token::Plus,
                     Box::new(Expr::Ident("x".to_string())),
                     Box::new(Expr::Ident("y".to_string())),
                 )),
-                type_annotation: TypeExpr::Arrow(
-                    Box::new(None),
-                    Box::new(TypeExpr::Arrow(Box::new(None), Box::new(None)))
-                ),
+                return_type: None
             }),
         );
 
         assert_eq!(
             parse("(x: Int, y: Int) => x + y"),
             expr(Expr::Function {
-                params: vec!["x".to_string(), "y".to_string(),],
+                params: vec![
+                    ("x".to_string(), Some(TypeExpr::Con("Int".to_string()))),
+                    ("y".to_string(), Some(TypeExpr::Con("Int".to_string()))),
+                ],
                 body: Box::new(Expr::Infix(
                     Token::Plus,
                     Box::new(Expr::Ident("x".to_string())),
                     Box::new(Expr::Ident("y".to_string())),
                 )),
-                type_annotation: TypeExpr::Arrow(
-                    Box::new(TypeExpr::Con("Int".to_string())),
-                    Box::new(TypeExpr::Arrow(
-                        Box::new(TypeExpr::Con("Int".to_string())),
-                        Box::new(None)
-                    ))
-                )
+                return_type: None
             }),
         );
 
@@ -952,28 +941,22 @@ mod tests {
         assert_eq!(
             parse("(x, y): Int => x + y"),
             expr(Expr::Function {
-                params: vec!["x".to_string(), "y".to_string(),],
+                params: vec![("x".to_string(), None), ("y".to_string(), None),],
                 body: Box::new(Expr::Infix(
                     Token::Plus,
                     Box::new(Expr::Ident("x".to_string())),
                     Box::new(Expr::Ident("y".to_string())),
                 )),
-                type_annotation: TypeExpr::Arrow(
-                    Box::new(None),
-                    Box::new(TypeExpr::Arrow(
-                        Box::new(None),
-                        Box::new(TypeExpr::Con("Int".to_string()))
-                    ))
-                )
+                return_type: Some(TypeExpr::Con("Int".to_string()))
             }),
         );
 
         assert_eq!(
             parse("(x) => x"),
             expr(Expr::Function {
-                params: vec!["x".to_string()],
+                params: vec![("x".to_string(), None)],
                 body: Box::new(Expr::Ident("x".to_string())),
-                type_annotation: TypeExpr::Arrow(Box::new(None), Box::new(None)),
+                return_type: None,
             }),
         );
     }

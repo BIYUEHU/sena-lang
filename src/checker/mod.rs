@@ -1,10 +1,8 @@
 use crate::checker::object::TypeObject;
-use crate::env::{CheckerEnv, Env};
+use crate::env::CheckerEnv;
 use crate::lexer::token::Token;
-use crate::parser::ast::{
-    Expr, Kind, Literal, Pattern, Stmt, TypeExpr, TypeVariantFields, UnsafeProgram,
-};
-use crate::utils::{type_to_vec, vec_to_kind, vec_to_type};
+use crate::parser::ast::{Expr, Kind, Literal, Pattern, Stmt, TypeExpr, TypeVariantFields};
+use crate::utils::{vec_to_kind, vec_to_type};
 use ast::{
     Checked, CheckedCase, CheckedExpr, CheckedStmt, CheckedTypeVariant, CheckedTypeVariantFields,
 };
@@ -12,55 +10,181 @@ use error::TypeError;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::vec;
-
 pub mod ast;
 pub mod error;
 pub mod object;
+use std::collections::{HashMap, VecDeque};
 
-pub struct Checker {
-    env: Rc<RefCell<CheckerEnv>>,
-}
+#[derive(Debug, Clone)]
+struct Constraint(pub TypeObject, pub TypeObject);
 
-impl Checker {
-    fn infer_literal(literal: &Literal) -> Result<TypeObject, TypeError> {
-        Ok(match literal {
-            Literal::Int(_) => TypeObject::Int,
-            Literal::Float(_) => TypeObject::Float,
-            Literal::String(_) => TypeObject::String,
-            Literal::Char(_) => TypeObject::Char,
-            Literal::Bool(_) => TypeObject::Bool,
-            Literal::Unit => TypeObject::Unit,
-            _ => TypeObject::Any,
-        })
+#[derive(Debug, Clone)]
+struct Substitution(HashMap<String, TypeObject>);
+
+impl Substitution {
+    fn new() -> Self {
+        Substitution(HashMap::new())
     }
 
-    pub fn resolve_kind(type_object: &TypeObject) -> Result<Kind, TypeError> {
-        match type_object {
-            TypeObject::Kind(kind) => Ok(kind.clone()),
-            TypeObject::Function(a, b)
-                if matches!(
-                    [*a.clone(), *b.clone()],
-                    [TypeObject::Kind(_), TypeObject::Kind(_)]
-                ) =>
-            {
-                Ok(Kind::Arrow(
-                    Box::new(Checker::resolve_kind(a)?),
-                    Box::new(Checker::resolve_kind(b)?),
-                ))
+    fn apply(&self, ty: &TypeObject) -> TypeObject {
+        match ty {
+            TypeObject::Var(var_id) => {
+                if let Some(t) = self.0.get(var_id) {
+                    self.apply(t)
+                } else {
+                    TypeObject::Var(var_id.clone())
+                }
             }
-            _ => Err(TypeError::KindMismatch {
-                expected: "Kind".into(),
-                found: format!("{}", type_object),
-            }),
+            TypeObject::Function(a, b) => {
+                TypeObject::Function(Box::new(self.apply(a)), Box::new(self.apply(b)))
+            }
+            TypeObject::Forall(params, body) => {
+                TypeObject::Forall(params.clone(), Box::new(self.apply(body)))
+            }
+            TypeObject::Lambda((param, kind), body) => {
+                TypeObject::Lambda((param.clone(), kind.clone()), Box::new(self.apply(body)))
+            }
+            TypeObject::ADTInst { name, params } => TypeObject::ADTInst {
+                name: name.clone(),
+                params: params.iter().map(|t| self.apply(t)).collect(),
+            },
+            _ => ty.clone(),
         }
     }
 
-    pub fn resolve(
+    fn compose(self, other: Substitution) -> Substitution {
+        let mut result = Substitution::new();
+        for (v, t) in other.0.iter() {
+            result.0.insert(v.clone(), self.apply(t));
+        }
+        for (v, t) in self.0.into_iter() {
+            if !result.0.contains_key(&v) {
+                result.0.insert(v, t);
+            }
+        }
+        result
+    }
+}
+
+fn occurs_check(var_id: String, ty: &TypeObject) -> bool {
+    match ty {
+        TypeObject::Var(v) => *v == var_id,
+        TypeObject::Function(a, b) => occurs_check(var_id.clone(), a) || occurs_check(var_id, b),
+        TypeObject::Forall(_, body) => occurs_check(var_id, body),
+        TypeObject::Lambda((_, _), body) => occurs_check(var_id, body),
+        TypeObject::ADTInst { params, .. } => {
+            params.iter().any(|t| occurs_check(var_id.clone(), t))
+        }
+        _ => false,
+    }
+}
+
+fn unify(constraints: Vec<Constraint>) -> Result<Substitution, TypeError> {
+    let mut subst = Substitution::new();
+    let mut queue: VecDeque<Constraint> = constraints.into();
+
+    while let Some(Constraint(t1, t2)) = queue.pop_front() {
+        let s1 = subst.apply(&t1);
+        let s2 = subst.apply(&t2);
+
+        if s1 == s2 {
+            continue;
+        }
+
+        match (s1.clone(), s2.clone()) {
+            // 如果某一边是 Var
+            (TypeObject::Var(v), ref other) => {
+                // occurs check
+                if occurs_check(v.clone(), other) {
+                    return Err(TypeError::InfiniteType(v, other.clone()));
+                }
+                // 绑定 v ↦ other
+                let mut new_sub = Substitution::new();
+                new_sub.0.insert(v.clone(), other.clone());
+                subst = new_sub.compose(subst);
+            }
+            (ref other, TypeObject::Var(v)) => {
+                if occurs_check(v.clone(), other) {
+                    return Err(TypeError::InfiniteType(v.clone(), other.clone()));
+                }
+                let mut new_sub = Substitution::new();
+                new_sub.0.insert(v.clone(), other.clone());
+                subst = new_sub.compose(subst);
+            }
+            (TypeObject::Function(a1, b1), TypeObject::Function(a2, b2)) => {
+                queue.push_back(Constraint(*a1, *a2));
+                queue.push_back(Constraint(*b1, *b2));
+            }
+            (
+                TypeObject::ADTInst {
+                    name: n1,
+                    params: p1,
+                },
+                TypeObject::ADTInst {
+                    name: n2,
+                    params: p2,
+                },
+            ) if n1 == n2 && p1.len() == p2.len() => {
+                for (x, y) in p1.into_iter().zip(p2.into_iter()) {
+                    queue.push_back(Constraint(x, y));
+                }
+            }
+            (ref x, ref y) if x == y => continue,
+            (t1, t2) => {
+                return Err(TypeError::CannotUnify { t1, t2 });
+            }
+        }
+    }
+
+    Ok(subst)
+}
+
+pub struct Checker {
+    env: Rc<RefCell<CheckerEnv>>,
+    next_var: RefCell<u32>,
+    constraints: RefCell<Vec<Constraint>>,
+}
+
+impl Checker {
+    pub fn new(env: Rc<RefCell<CheckerEnv>>) -> Self {
+        Checker {
+            env,
+            next_var: RefCell::new(0),
+            constraints: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn fresh_var(&self) -> TypeObject {
+        let id = *self.next_var.borrow();
+        *self.next_var.borrow_mut() = id + 1;
+        TypeObject::Var(format!("t{}", id))
+    }
+
+    fn add_constraint(&self, t1: TypeObject, t2: TypeObject) -> Result<(), TypeError> {
+        let mut con = self.constraints.borrow_mut();
+        con.push(Constraint(t1, t2));
+        if let Err(err) = unify(con.clone()) {
+            con.pop();
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn resolve_type_expr(&self, te: Option<&TypeExpr>) -> Result<TypeObject, TypeError> {
+        match te {
+            Some(te_inner) => self.resolve(te_inner, Rc::clone(&self.env)),
+            None => Ok(self.fresh_var()),
+        }
+    }
+
+    fn resolve(
+        &self,
         type_expr: &TypeExpr,
         env: Rc<RefCell<CheckerEnv>>,
     ) -> Result<TypeObject, TypeError> {
         match type_expr {
-            TypeExpr::Var(name) | TypeExpr::Con(name) => match name.as_str() {
+            TypeExpr::Var(id) => Ok(TypeObject::Var(id.clone())),
+            TypeExpr::Con(name) => match name.as_str() {
                 "Int" => Ok(TypeObject::Int),
                 "Float" => Ok(TypeObject::Float),
                 "String" => Ok(TypeObject::String),
@@ -74,89 +198,286 @@ impl Checker {
                     .ok_or(TypeError::UndefinedVariable(name.clone())),
             },
             TypeExpr::App(constructor, args) => {
-                let base = Checker::resolve(constructor, Rc::clone(&env))?;
-                let mut param_objs = Vec::with_capacity(args.len());
-                for arg in args {
-                    param_objs.push(Checker::resolve(arg, Rc::clone(&env))?);
+                let base = self.resolve(constructor, Rc::clone(&env))?;
+                let mut arg_tys = Vec::with_capacity(args.len());
+                for arg in args.iter() {
+                    arg_tys.push(self.resolve(arg, Rc::clone(&env))?);
                 }
                 match base {
                     TypeObject::ADTDef { name, .. } => Ok(TypeObject::ADTInst {
                         name,
-                        params: param_objs,
+                        params: arg_tys,
                     }),
-                    _ => Err(TypeError::InvalidOperation {
+                    other => Err(TypeError::InvalidOperation {
                         operation: "type application".into(),
-                        typ: format!("{}", base),
+                        typ: format!("{}", other),
                     }),
                 }
             }
-            // a -> b
             TypeExpr::Arrow(left, right) => Ok(TypeObject::Function(
-                Box::new(Checker::resolve(left, Rc::clone(&env))?),
-                Box::new(Checker::resolve(right, Rc::clone(&env))?),
+                Box::new(self.resolve(left, Rc::clone(&env))?),
+                Box::new(self.resolve(right, Rc::clone(&env))?),
             )),
-            // System F ∀a. T
             TypeExpr::Forall(binders, body) => {
-                let inner = *body.clone();
-                // 先将所有量化变量插入临时环境，指明它们的 kind（此处默认 Kind）
                 let saved = env.borrow().clone();
                 {
-                    let mut env = env.borrow_mut();
-                    for (var, _) in binders {
-                        env.insert_bind(var.clone(), TypeObject::Kind(Kind::Star))?;
+                    let mut e = env.borrow_mut();
+                    for (var_name, _) in binders.iter() {
+                        e.insert_bind(var_name.clone(), TypeObject::Kind(Kind::Star))?;
                     }
                 }
-                let ty_body = Checker::resolve(&inner, Rc::clone(&env))?;
+                let ty_body = self.resolve(body, Rc::clone(&env))?;
+                // 恢复环境
                 *env.borrow_mut() = saved;
                 Ok(TypeObject::Forall(
                     binders
                         .iter()
-                        .map(|(n, _)| (n.clone(), TypeObject::Kind(Kind::Star)))
+                        .map(|(v, _)| (v.clone(), TypeObject::Kind(Kind::Star)))
                         .collect(),
                     Box::new(ty_body),
                 ))
             }
-
-            // λ(a :: K). T
-            TypeExpr::Lambda((param, body_ty), body) => {
-                let param_kind = Checker::resolve(body_ty, Rc::clone(&env))?;
+            TypeExpr::Lambda((param, kind), body) => {
+                let kind_obj = self.resolve(kind, Rc::clone(&env))?;
                 let saved = env.borrow().clone();
                 {
-                    let mut env = env.borrow_mut();
-                    env.insert_bind(param.clone(), param_kind.clone())?;
+                    let mut e = env.borrow_mut();
+                    e.insert_bind(param.clone(), kind_obj.clone())?;
                 }
-                let ty_body = Checker::resolve(body, Rc::clone(&env))?;
+                let ty_body = self.resolve(body, Rc::clone(&env))?;
                 *env.borrow_mut() = saved;
                 Ok(TypeObject::Lambda(
-                    (param.clone(), Box::new(param_kind)),
+                    (param.clone(), Box::new(kind_obj)),
                     Box::new(ty_body),
                 ))
             }
-            TypeExpr::Literal(lit) => Checker::infer_literal(lit),
-            TypeExpr::Kind(kind) => Ok(match kind {
-                Kind::Star => TypeObject::Kind(Kind::Star),
-                Kind::Arrow(param_type, return_type) => TypeObject::Function(
-                    Box::new(Checker::resolve(
-                        &TypeExpr::Kind(*param_type.clone()),
-                        Rc::clone(&env),
-                    )?),
-                    Box::new(Checker::resolve(
-                        &TypeExpr::Kind(*return_type.clone()),
-                        Rc::clone(&env),
-                    )?),
-                ),
-            }),
+            TypeExpr::Literal(lit) => self.infer_literal(lit),
+            TypeExpr::Kind(kind) => Ok(TypeObject::Kind(kind.clone())),
         }
     }
 
-    pub fn new(env: Rc<RefCell<CheckerEnv>>) -> Self {
-        Checker { env }
+    fn infer_literal(&self, literal: &Literal) -> Result<TypeObject, TypeError> {
+        Ok(match literal {
+            Literal::Int(_) => TypeObject::Int,
+            Literal::Float(_) => TypeObject::Float,
+            Literal::String(_) => TypeObject::String,
+            Literal::Char(_) => TypeObject::Char,
+            Literal::Bool(_) => TypeObject::Bool,
+            Literal::Unit => TypeObject::Unit,
+            _ => TypeObject::Any,
+        })
     }
 
-    pub fn check(&self, program: &UnsafeProgram) -> Result<Vec<CheckedStmt>, TypeError> {
-        program.iter().map(|s| self.check_stmt(s)).collect()
+    pub fn check(&self, program: &Vec<Stmt>) -> Result<Vec<CheckedStmt>, TypeError> {
+        let mut checked_list = Vec::with_capacity(program.len());
+        for stmt in program.iter() {
+            checked_list.push(self.check_stmt(stmt)?);
+        }
+        // 所有语句推断完毕后，进行 unify，把约束解出
+        let subst = unify(self.constraints.borrow().clone())?;
+        // 最后把 substitution 应用到每个 CheckedExpr 的 type_annotation 上
+        let mut final_list = Vec::with_capacity(checked_list.len());
+        for cs in checked_list.into_iter() {
+            final_list.push(self.apply_subst_stmt(cs, &subst));
+        }
+        Ok(final_list)
     }
 
+    fn apply_subst_stmt(&self, stmt: CheckedStmt, subst: &Substitution) -> CheckedStmt {
+        match stmt {
+            CheckedStmt::Let {
+                name,
+                type_annotation,
+                value,
+            } => {
+                let ta2 = subst.apply(&type_annotation);
+                let v2 = self.apply_subst_expr(value, subst);
+                CheckedStmt::Let {
+                    name,
+                    type_annotation: ta2,
+                    value: v2,
+                }
+            }
+            CheckedStmt::Expr(expr) => {
+                let expr2 = self.apply_subst_expr(expr, subst);
+                CheckedStmt::Expr(expr2)
+            }
+            CheckedStmt::ImportAll { source, alias } => CheckedStmt::ImportAll { source, alias },
+            CheckedStmt::ImportSome { source, items } => CheckedStmt::ImportSome { source, items },
+            CheckedStmt::Export {
+                body,
+                only_abstract,
+            } => {
+                let b2 = Box::new(self.apply_subst_stmt(*body, subst));
+                CheckedStmt::Export {
+                    body: b2,
+                    only_abstract,
+                }
+            }
+            _ => stmt,
+        }
+    }
+
+    /// 对 CheckedExpr 里的 type_annotation 和子节点递归应用 substitution
+    fn apply_subst_expr(&self, expr: CheckedExpr, subst: &Substitution) -> CheckedExpr {
+        match expr {
+            CheckedExpr::Ident {
+                value,
+                type_annotation,
+            } => {
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::Ident {
+                    value,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::Literal {
+                value,
+                type_annotation,
+            } => {
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::Literal {
+                    value,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::Prefix {
+                op,
+                expr: sub,
+                type_annotation,
+            } => {
+                let sub2 = Box::new(self.apply_subst_expr(*sub, subst));
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::Prefix {
+                    op,
+                    expr: sub2,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::Infix {
+                op,
+                left,
+                right,
+                type_annotation,
+            } => {
+                let l2 = Box::new(self.apply_subst_expr(*left, subst));
+                let r2 = Box::new(self.apply_subst_expr(*right, subst));
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::Infix {
+                    op,
+                    left: l2,
+                    right: r2,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::Call {
+                callee,
+                params,
+                type_annotation,
+            } => {
+                let c2 = Box::new(self.apply_subst_expr(*callee, subst));
+                let ps2 = params
+                    .into_iter()
+                    .map(|p| self.apply_subst_expr(p, subst))
+                    .collect();
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::Call {
+                    callee: c2,
+                    params: ps2,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::Function {
+                params,
+                body,
+                type_annotation,
+            } => {
+                let ps = params.clone();
+                let b2 = Box::new(self.apply_subst_expr(*body, subst));
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::Function {
+                    params: ps,
+                    body: b2,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::If {
+                condition,
+                then_branch,
+                else_branch,
+                type_annotation,
+            } => {
+                let c2 = Box::new(self.apply_subst_expr(*condition, subst));
+                let t2 = Box::new(self.apply_subst_expr(*then_branch, subst));
+                let e2 = Box::new(self.apply_subst_expr(*else_branch, subst));
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::If {
+                    condition: c2,
+                    then_branch: t2,
+                    else_branch: e2,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::LetIn {
+                name,
+                value,
+                body,
+                type_annotation,
+            } => {
+                let v2 = Box::new(self.apply_subst_expr(*value, subst));
+                let b2 = Box::new(self.apply_subst_expr(*body, subst));
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::LetIn {
+                    name,
+                    value: v2,
+                    body: b2,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::Match {
+                expr,
+                cases,
+                type_annotation,
+            } => {
+                let e2 = Box::new(self.apply_subst_expr(*expr, subst));
+                let cs2: Vec<CheckedCase> = cases
+                    .into_iter()
+                    .map(|case| {
+                        let guard2 = Box::new(self.apply_subst_expr(case.guard, subst));
+                        let body2 = Box::new(self.apply_subst_expr(case.body, subst));
+                        CheckedCase {
+                            pattern: case.pattern,
+                            guard: *guard2,
+                            body: *body2,
+                        }
+                    })
+                    .collect();
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::Match {
+                    expr: e2,
+                    cases: cs2,
+                    type_annotation: ta,
+                }
+            }
+            CheckedExpr::Block {
+                stmts,
+                type_annotation,
+            } => {
+                let ss2 = stmts
+                    .into_iter()
+                    .map(|s| self.apply_subst_stmt(s, subst))
+                    .collect();
+                let ta = subst.apply(&type_annotation);
+                CheckedExpr::Block {
+                    stmts: ss2,
+                    type_annotation: ta,
+                }
+            }
+            _ => expr,
+        }
+    }
+
+    /// 为一个语句产生一个带有推断后的类型的 CheckedStmt
     fn check_stmt(&self, stmt: &Stmt) -> Result<CheckedStmt, TypeError> {
         match stmt {
             Stmt::Let {
@@ -167,114 +488,127 @@ impl Checker {
                 if self.env.borrow().has_bind(name) {
                     return Err(TypeError::RedefinedVariable(name.clone()));
                 }
-                let expected_type = Checker::resolve(type_annotation, Rc::clone(&self.env))?;
-                let checked_value = self.check_expr(value, &expected_type)?;
+
+                // 1) 解析用户给的注解，如果有就用它，没有就生成 fresh var
+                let ann_ty = self.resolve_type_expr(type_annotation.as_ref())?;
+
+                // 2) 推断 value 的类型，要求结果 unify(ann_ty, inferred_ty)
+                let checked_value = self.check_expr(value, &ann_ty)?;
+
+                // 3) 将 ann_ty 泛化后插入环境：∀a. AnnTy
+                let generalized = self.generalize(ann_ty.clone());
                 self.env
                     .borrow_mut()
-                    .insert_bind(name.clone(), expected_type.clone())?;
+                    .insert_bind(name.clone(), generalized)?;
+
                 Ok(CheckedStmt::Let {
                     name: name.clone(),
-                    type_annotation: expected_type,
+                    type_annotation: ann_ty,
                     value: checked_value,
                 })
             }
             Stmt::Type {
                 name,
                 params,
-                variants,
                 kind_annotation,
+                variants,
             } => {
                 if self.env.borrow().has_bind(name) {
                     return Err(TypeError::RedefinedVariable(name.clone()));
                 }
-                let kind_annotation = Checker::resolve(kind_annotation, Rc::clone(&self.env))?;
-                let expected_kind_annotation = Checker::resolve_kind(&kind_annotation)?;
-                let checked_kind_annotation = vec_to_kind(
-                    [
-                        params.iter().map(|_| Kind::Star).collect::<Vec<_>>(),
-                        vec![Kind::Star],
-                    ]
-                    .concat(),
-                );
-                if expected_kind_annotation != checked_kind_annotation {
-                    return Err(TypeError::KindMismatch {
-                        expected: format!("{}", expected_kind_annotation),
-                        found: format!("{}", checked_kind_annotation),
-                    });
-                }
+                // 1) 解析 kind 注解（如果有）
+                let kind_ann = match kind_annotation {
+                    Some(k) => self.resolve_type_expr(Some(k))?,
+                    None => TypeObject::Kind(Kind::Star),
+                };
+                // 2) 把 type name 先插到环境，Kind 级别，避免递归
+                self.env.borrow_mut().insert_bind(
+                    name.clone(),
+                    TypeObject::Kind(match kind_ann.clone() {
+                        TypeObject::Kind(k) => k,
+                        _ => {
+                            return Err(TypeError::KindMismatch {
+                                expected: "kind".into(),
+                                found: format!("{}", kind_ann),
+                            })
+                        }
+                    }),
+                )?;
 
-                let result = CheckedStmt::Type {
-                    name: name.clone(),
-                    params: params.clone(),
-                    variants: {
-                        let mut checked_variants = vec![];
-                        for variant in variants {
-                            checked_variants.push(match variant.clone().fields {
-                                TypeVariantFields::Unit => {
-                                    self.env.borrow_mut().insert_bind(
-                                        variant.clone().name,
-                                        TypeObject::ADTInst {
-                                            name: name.clone(),
-                                            params: params
-                                                .iter()
-                                                .map(|_| TypeObject::Any)
-                                                .collect(),
-                                        },
-                                    )?;
-                                    CheckedTypeVariant {
-                                        name: variant.clone().name,
-                                        fields: CheckedTypeVariantFields::Unit,
-                                    }
-                                }
-                                TypeVariantFields::Tuple(fields) => {
-                                    let env = Env::extend(Rc::clone(&self.env));
-                                    for p in params {
-                                        Rc::clone(&env)
-                                            .borrow_mut()
-                                            .insert_bind(p.clone(), TypeObject::Any)?;
-                                    }
-                                    let checked_type_variant_fields = fields
-                                        .iter()
-                                        .map(|f| Checker::resolve(f, Rc::clone(&env)))
-                                        .collect::<Result<Vec<_>, _>>()?;
-                                    self.env.borrow_mut().insert_bind(
-                                        variant.clone().name,
-                                        TypeObject::Function(
-                                            Box::new(vec_to_type(
-                                                checked_type_variant_fields.clone(),
-                                            )),
-                                            Box::new(TypeObject::ADTInst {
-                                                name: name.clone(),
-                                                params: params
-                                                    .iter()
-                                                    .map(|_| TypeObject::Any)
-                                                    .collect(),
-                                            }),
-                                        ),
-                                    )?;
-                                    CheckedTypeVariant {
-                                        name: variant.clone().name,
-                                        fields: CheckedTypeVariantFields::Tuple(
-                                            checked_type_variant_fields,
-                                        ),
-                                    }
-                                }
-                                _ => unimplemented!("record type variant"),
+                // 3) 解析每个构造子的类型
+                let mut checked_variants = Vec::new();
+                for variant in variants.iter() {
+                    match &variant.fields {
+                        TypeVariantFields::Unit => {
+                            // Unit 构造子对应一个零元构造
+                            let cons_type = TypeObject::ADTInst {
+                                name: name.clone(),
+                                params: params.iter().map(|_| TypeObject::Any).collect(),
+                            };
+                            self.env
+                                .borrow_mut()
+                                .insert_bind(variant.name.clone(), cons_type.clone())?;
+                            checked_variants.push(CheckedTypeVariant {
+                                name: variant.name.clone(),
+                                fields: CheckedTypeVariantFields::Unit,
                             });
                         }
-                        checked_variants
-                    },
-                    kind_annotation: checked_kind_annotation,
-                };
+                        TypeVariantFields::Tuple(fields) => {
+                            let saved_env = self.env.borrow().clone();
+                            {
+                                let mut e = self.env.borrow_mut();
+                                for p in params.iter() {
+                                    e.insert_bind(p.clone(), TypeObject::Any)?;
+                                }
+                            }
+                            let mut field_tys = Vec::new();
+                            for f in fields.iter() {
+                                let ty_f = self.resolve(f, Rc::clone(&self.env))?;
+                                field_tys.push(ty_f);
+                            }
+                            let retty = TypeObject::ADTInst {
+                                name: name.clone(),
+                                params: params.iter().map(|_| TypeObject::Any).collect(),
+                            };
+                            let func_ty =
+                                vec_to_type([field_tys.clone(), vec![retty.clone()]].concat());
+                            self.env
+                                .borrow_mut()
+                                .insert_bind(variant.name.clone(), func_ty.clone())?;
+                            checked_variants.push(CheckedTypeVariant {
+                                name: variant.name.clone(),
+                                fields: CheckedTypeVariantFields::Tuple(field_tys),
+                            });
+                            *self.env.borrow_mut() = saved_env;
+                        }
+                        _ => unimplemented!("record variant"),
+                    }
+                }
 
-                self.env
-                    .borrow_mut()
-                    .insert_bind(name.clone(), kind_annotation.clone())?;
-                Ok(result)
+                Ok(CheckedStmt::Type {
+                    name: name.clone(),
+                    params: params.clone(),
+                    variants: checked_variants,
+                    kind_annotation: match kind_ann.clone() {
+                        TypeObject::Kind(_) => vec_to_kind(
+                            [
+                                params.iter().map(|_| Kind::Star).collect::<Vec<_>>(),
+                                vec![Kind::Star],
+                            ]
+                            .concat(),
+                        ),
+                        _ => {
+                            return Err(TypeError::KindMismatch {
+                                expected: "kind".into(),
+                                found: format!("{}", kind_ann),
+                            })
+                        }
+                    },
+                })
             }
             Stmt::Expr(expression) => {
-                let checked_expression = self.infer_expr(expression)?;
-                Ok(CheckedStmt::Expr(checked_expression))
+                let checked_expr = self.infer_expr(expression)?;
+                Ok(CheckedStmt::Expr(checked_expr))
             }
             Stmt::ImportAll { source, alias } => Ok(CheckedStmt::ImportAll {
                 source: source.clone(),
@@ -288,109 +622,133 @@ impl Checker {
                 body,
                 only_abstract,
             } => {
-                let checked_body = Box::new(self.check_stmt(body)?);
+                let cb = Box::new(self.check_stmt(body)?);
                 Ok(CheckedStmt::Export {
-                    body: checked_body,
+                    body: cb,
                     only_abstract: *only_abstract,
                 })
             }
         }
     }
 
+    /// 对表达式做推断：返回一个带有 type_annotation 的 CheckedExpr
+    /// 如果预期类型不为 Any，就在最后做 unify(预期, 推断结果)
+    pub fn check_expr(&self, expr: &Expr, expected: &TypeObject) -> Result<CheckedExpr, TypeError> {
+        let inferred = self.infer_expr(expr)?;
+        // 统一推断类型与期望类型
+        self.add_constraint(inferred.get_type(), expected.clone())?;
+        unify(self.constraints.borrow().clone())?;
+
+        Ok(inferred)
+    }
+
+    /// 真正的推断逻辑：对每种 Expr 节点
     pub fn infer_expr(&self, expression: &Expr) -> Result<CheckedExpr, TypeError> {
         match expression {
             Expr::Ident(name) | Expr::Internal(name) => {
-                let found_type = self
+                // 从环境里查找类型 scheme 并实例化
+                let scheme = self
                     .env
                     .borrow()
                     .get_bind(name)
                     .ok_or(TypeError::UndefinedVariable(name.clone()))?;
+                let inst = self.instantiate(scheme);
                 Ok(CheckedExpr::Ident {
                     value: name.clone(),
-                    type_annotation: found_type,
+                    type_annotation: inst,
                 })
             }
-            Expr::Literal(literal) => {
-                let literal_type = Checker::infer_literal(literal)?;
+            Expr::Literal(lit) => {
+                let ty = self.infer_literal(lit)?;
                 Ok(CheckedExpr::Literal {
-                    value: literal.clone(),
-                    type_annotation: literal_type,
+                    value: lit.clone(),
+                    type_annotation: ty,
                 })
             }
-            Expr::Prefix(operator, sub_expr) => {
+            Expr::Prefix(op, sub_expr) => {
                 let checked_sub = self.infer_expr(sub_expr)?;
-                let result_type = self.infer_prefix(operator, &checked_sub.get_type())?;
+                let sub_ty = checked_sub.get_type();
+                // 根据运算符约束类型
+                let result_ty = self.infer_prefix(op, &sub_ty)?;
                 Ok(CheckedExpr::Prefix {
-                    op: operator.clone(),
+                    op: op.clone(),
                     expr: Box::new(checked_sub),
-                    type_annotation: result_type,
+                    type_annotation: result_ty,
                 })
             }
-            Expr::Infix(operator, left_expr, right_expr) => {
-                let checked_left = self.infer_expr(left_expr)?;
-                let checked_right = self.infer_expr(right_expr)?;
-                let result_type = self.infer_infix(
-                    operator,
-                    &checked_left.get_type(),
-                    &checked_right.get_type(),
-                )?;
+            Expr::Infix(op, left_expr, right_expr) => {
+                let left_c = self.infer_expr(left_expr)?;
+                let right_c = self.infer_expr(right_expr)?;
+                let lty = left_c.get_type();
+                let rty = right_c.get_type();
+                let result_ty = self.infer_infix(op, &lty, &rty)?;
                 Ok(CheckedExpr::Infix {
-                    op: operator.clone(),
-                    left: Box::new(checked_left),
-                    right: Box::new(checked_right),
-                    type_annotation: result_type,
+                    op: op.clone(),
+                    left: Box::new(left_c),
+                    right: Box::new(right_c),
+                    type_annotation: result_ty,
                 })
             }
             Expr::Call { callee, params, .. } => {
-                let checked_callee = self.infer_expr(callee)?;
+                // 先推断 callee，应该是函数类型
+                let callee_c = self.infer_expr(callee)?;
+                let mut current_ty = callee_c.get_type();
                 let mut checked_args = Vec::new();
-                let mut current_type = checked_callee.get_type();
-                for param in params {
-                    let checked_arg = self.infer_expr(param)?;
-                    if let TypeObject::Function(param_type, return_type) = current_type {
-                        self.unify(
-                            &param_type,
-                            &checked_arg.get_type(),
-                            "function call argument",
-                        )?;
-                        current_type = *return_type;
-                        checked_args.push(checked_arg);
-                    } else {
-                        return Err(TypeError::NotCallable {
-                            found: current_type.to_string(),
-                        });
+                for arg in params.iter() {
+                    let arg_c = self.infer_expr(arg)?;
+                    match current_ty.clone() {
+                        TypeObject::Function(param_ty, ret_ty) => {
+                            // 加约束 param_ty ≡ arg_c.get_type()
+                            self.add_constraint((*param_ty).clone(), arg_c.get_type())?;
+                            current_ty = *ret_ty;
+                            checked_args.push(arg_c);
+                        }
+                        other => {
+                            return Err(TypeError::NotCallable {
+                                found: format!("{}", other),
+                            });
+                        }
                     }
                 }
                 Ok(CheckedExpr::Call {
-                    callee: Box::new(checked_callee),
+                    callee: Box::new(callee_c),
                     params: checked_args,
-                    type_annotation: current_type,
+                    type_annotation: current_ty,
                 })
             }
             Expr::Function {
                 params,
                 body,
-                type_annotation,
+                return_type,
             } => {
-                let env = CheckerEnv::extend(Rc::clone(&self.env));
-                let mut type_annotation = Checker::resolve(type_annotation, Rc::clone(&self.env))?;
-                let mut type_vec = type_to_vec(&type_annotation);
-                let mut index = 0;
-                for p in params {
-                    env.borrow_mut()
-                        .insert_bind(p.clone(), type_vec[index].clone())?;
-                    index += 1;
+                let mut param_tys = Vec::new();
+                for (_name, ann_opt) in params.iter() {
+                    let t = self.resolve_type_expr(ann_opt.as_ref())?;
+                    param_tys.push(t);
                 }
-                let checked_body = Checker::new(env).check_expr(body, type_vec.last().unwrap())?;
-                if type_vec.last().unwrap() == &TypeObject::Any {
-                    let last = type_vec.len() - 1;
-                    type_vec[last] = checked_body.get_type();
-                    type_annotation = vec_to_type(type_vec);
+                let ret_ty = self.resolve_type_expr(return_type.as_ref())?;
+
+                let extended_env = CheckerEnv::extend(Rc::clone(&self.env));
+                {
+                    let mut ev = extended_env.borrow_mut();
+                    for (idx, (name, _ann)) in params.iter().enumerate() {
+                        let pty = param_tys[idx].clone();
+                        let scheme = self.generalize(pty.clone());
+                        ev.insert_bind(name.clone(), scheme).unwrap();
+                    }
                 }
+                let nested_checker = Checker::new(extended_env);
+                let checked_body = nested_checker.check_expr(body, &ret_ty)?;
+                let actual_ret = checked_body.get_type();
+                self.add_constraint(ret_ty.clone(), actual_ret.clone())?;
+
+                let func_ty = param_tys.into_iter().rev().fold(actual_ret, |acc, p| {
+                    TypeObject::Function(Box::new(p), Box::new(acc))
+                });
                 Ok(CheckedExpr::Function {
-                    params: params.clone(),
+                    params: params.clone().into_iter().map(|(n, _)| n.clone()).collect(),
                     body: Box::new(checked_body),
-                    type_annotation,
+                    type_annotation: func_ty,
                 })
             }
             Expr::If {
@@ -398,14 +756,14 @@ impl Checker {
                 then_branch,
                 else_branch,
             } => {
-                let checked_condition = self.check_expr(condition, &TypeObject::Bool)?;
-                let checked_then = self.infer_expr(then_branch)?;
-                let checked_else = self.check_expr(else_branch, &checked_then.get_type())?;
+                let cond_c = self.check_expr(condition, &TypeObject::Bool)?;
+                let then_c = self.infer_expr(then_branch)?;
+                let else_c = self.check_expr(else_branch, &then_c.get_type())?;
                 Ok(CheckedExpr::If {
-                    condition: Box::new(checked_condition),
-                    then_branch: Box::new(checked_then),
-                    else_branch: Box::new(checked_else.clone()),
-                    type_annotation: checked_else.get_type(),
+                    condition: Box::new(cond_c),
+                    then_branch: Box::new(then_c),
+                    else_branch: Box::new(else_c.clone()),
+                    type_annotation: else_c.get_type(),
                 })
             }
             Expr::LetIn {
@@ -414,218 +772,240 @@ impl Checker {
                 value,
                 body,
             } => {
-                let expected_type = Checker::resolve(type_annotation, Rc::clone(&self.env))?;
-                let checked_value = self.check_expr(value, &expected_type)?;
+                let ann_ty = self.resolve_type_expr(type_annotation.as_ref())?;
+                let checked_val = self.check_expr(value, &ann_ty)?;
                 let extended_env = CheckerEnv::extend(Rc::clone(&self.env));
-                extended_env
-                    .borrow_mut()
-                    .insert_bind(name.clone(), expected_type.clone())?;
+                let gen = self.generalize(ann_ty.clone());
+                extended_env.borrow_mut().insert_bind(name.clone(), gen)?;
                 let nested_checker = Checker::new(extended_env);
                 let checked_body = nested_checker.infer_expr(body)?;
+
                 Ok(CheckedExpr::LetIn {
                     name: name.clone(),
-                    value: Box::new(checked_value),
+                    value: Box::new(checked_val),
                     body: Box::new(checked_body.clone()),
                     type_annotation: checked_body.get_type(),
                 })
             }
             Expr::Match { expr, cases } => {
-                let checked_matched = self.infer_expr(expr)?;
-                let mut result_type = TypeObject::Any;
+                let matched_c = self.infer_expr(expr)?;
+                let result_ty = self.fresh_var(); // 先假设一个 result 变量
                 let mut checked_cases = Vec::new();
-                for case in cases {
-                    let pattern_type = self.infer_pattern(&case.pattern)?;
-                    self.unify(&checked_matched.get_type(), &pattern_type, "match pattern")?;
-                    let checked_guard = self.check_expr(&case.guard, &TypeObject::Bool)?;
-                    let checked_body = self.infer_expr(&case.body)?;
-                    if result_type == TypeObject::Any {
-                        result_type = checked_body.get_type();
-                    } else {
-                        self.unify(&result_type, &checked_body.get_type(), "match body")?;
-                    }
+                for case in cases.iter() {
+                    // 1) 模式类型
+                    let pat_ty = self.infer_pattern(&case.pattern)?;
+                    self.add_constraint(matched_c.get_type(), pat_ty)?;
+                    // 2) guard 必须是 Bool
+                    let guard_c = self.check_expr(&case.guard, &TypeObject::Bool)?;
+                    // 3) body
+                    let body_c = self.infer_expr(&case.body)?;
+                    // 统一 body 类型和 result_ty
+                    self.add_constraint(result_ty.clone(), body_c.get_type())?;
                     checked_cases.push(CheckedCase {
                         pattern: case.pattern.clone(),
-                        guard: checked_guard,
-                        body: checked_body,
+                        guard: guard_c,
+                        body: body_c,
                     });
                 }
                 Ok(CheckedExpr::Match {
-                    expr: Box::new(checked_matched),
+                    expr: Box::new(matched_c),
                     cases: checked_cases,
-                    type_annotation: result_type,
+                    type_annotation: result_ty,
                 })
             }
-            Expr::Block(statements) => {
-                let mut last_expression_type = TypeObject::Unit;
+            Expr::Block(stmts) => {
+                let mut last_ty = TypeObject::Unit;
                 let mut checked_statements = Vec::new();
-                for s in statements {
+                for s in stmts.iter() {
                     let cs = self.check_stmt(s)?;
-                    if let CheckedStmt::Expr(expr) = &cs {
-                        last_expression_type = expr.get_type();
+                    if let CheckedStmt::Expr(e) = &cs {
+                        last_ty = e.get_type();
                     }
                     checked_statements.push(cs);
                 }
                 Ok(CheckedExpr::Block {
                     stmts: checked_statements,
-                    type_annotation: last_expression_type,
+                    type_annotation: last_ty,
                 })
             }
         }
     }
 
-    pub fn check_expr(
-        &self,
-        expression: &Expr,
-        expected_type: &TypeObject,
-    ) -> Result<CheckedExpr, TypeError> {
-        let node = self.infer_expr(expression)?;
-        self.unify(
-            expected_type,
-            &node.get_type(),
-            format!("{:?}", expression).as_str(),
-        )?;
-        Ok(node)
-    }
-
-    fn unify(
-        &self,
-        expected: &TypeObject,
-        actual: &TypeObject,
-        context: &str,
-    ) -> Result<TypeObject, TypeError> {
-        match (expected, actual) {
-            (TypeObject::Function(ea, eb), TypeObject::Function(aa, ab)) => {
-                let p = self.unify(ea, aa, context)?;
-                let r = self.unify(eb, ab, context)?;
-                Ok(TypeObject::Function(Box::new(p), Box::new(r)))
+    /// 推断模式（Pattern），返回该模式对应的类型，并收集约束
+    fn infer_pattern(&self, pattern: &Pattern) -> Result<TypeObject, TypeError> {
+        match pattern {
+            Pattern::Ident(name) => {
+                // 如果环境已有绑定，取出来，否则视作 fresh var
+                Ok(self.env.borrow().get_bind(name).unwrap_or(TypeObject::Any))
             }
-            (TypeObject::Any, t) | (t, TypeObject::Any) => Ok(t.clone()),
-            (TypeObject::ADTDef { name: en, .. }, TypeObject::ADTDef { name: an, .. })
-                if en == an =>
-            {
-                Ok(expected.clone())
+            Pattern::Literal(lit) => self.infer_literal(lit),
+            Pattern::ADTConstructor { name, args } => {
+                // 从环境里找到构造子类型
+                let ctor_ty = self
+                    .env
+                    .borrow()
+                    .get_bind(name)
+                    .ok_or(TypeError::UndefinedVariable(name.clone()))?;
+                // 先实例化
+                let inst = self.instantiate(ctor_ty);
+                // 形如 t1 -> t2 -> ... -> Tret
+                let mut current_ty = inst.clone();
+                // 每个 arg 都统一到参数类型
+                for arg in args.iter() {
+                    if let TypeObject::Function(p_ty, next_ty) = current_ty.clone() {
+                        let arg_ty = self.infer_pattern(arg)?;
+                        self.add_constraint(*p_ty.clone(), arg_ty)?;
+                        current_ty = *next_ty.clone();
+                    } else {
+                        return Err(TypeError::ArityMismatch {
+                            expected: 0,
+                            found: args.len(),
+                            context: format!("Pattern constructor {}", name),
+                        });
+                    }
+                }
+                Ok(current_ty)
             }
-            (e, a) if e == a => Ok(e.clone()),
-            _ => Err(TypeError::TypeMismatch {
-                expected: expected.to_string(),
-                found: actual.to_string(),
-                context: context.to_string(),
-            }),
         }
     }
 
+    fn instantiate(&self, scheme: TypeObject) -> TypeObject {
+        if let TypeObject::Forall(binders, body) = scheme {
+            let mut subst = Substitution::new();
+            for _ in binders.iter() {
+                // var_name 在实际使用中其实是一个 String，但是我们用 Var(u32) 做控制
+                // 这里直接生成 fresh var，例如 Var(t0), Var(t1)...
+                // 但为了示例简化，假设 `var_name` 对应的是 u32 编号
+                // 如有需要可自行建立 String→u32 的映射
+                let new_var = self.fresh_var();
+                if let TypeObject::Var(id) = &new_var {
+                    subst.0.insert(id.clone(), new_var.clone());
+                }
+            }
+            subst.apply(&body)
+        } else {
+            scheme
+        }
+    }
+
+    fn generalize(&self, ty: TypeObject) -> TypeObject {
+        // 1) 找出 ty 中所有的 Var
+        let mut tvs = Vec::new();
+        fn collect_vars(ty: &TypeObject, acc: &mut Vec<String>) {
+            match ty {
+                TypeObject::Var(id) => {
+                    if !acc.contains(id) {
+                        acc.push(id.clone());
+                    }
+                }
+                TypeObject::Function(a, b) => {
+                    collect_vars(a, acc);
+                    collect_vars(b, acc);
+                }
+                TypeObject::Forall(_, body) => {
+                    collect_vars(body, acc);
+                }
+                TypeObject::Lambda((_, _), body) => {
+                    collect_vars(body, acc);
+                }
+                TypeObject::ADTInst { params, .. } => {
+                    for t in params.iter() {
+                        collect_vars(t, acc);
+                    }
+                }
+                _ => {}
+            }
+        }
+        collect_vars(&ty, &mut tvs);
+        // 在 CheckerEnv 中假设 `env.free_ty_vars()` 能返回一个 Vec<u32>，
+        // 如果没有这个方法，可以简单遍历 env 中所有绑定类型，找出它们的 Vars，组合成列表。
+        let vars: Vec<String> = self
+            .env
+            .borrow()
+            .binds
+            .iter()
+            .filter_map(|(v, t)| {
+                if let TypeObject::Var(_) = t {
+                    Some(v.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // 3) 过滤出那些不在 env_vars 中的 tvs，就是真正可以量化的变量
+        let quantifiable: Vec<String> = tvs.into_iter().filter(|v| !vars.contains(v)).collect();
+
+        // 4) 如果没有可量化的，就直接返回原类型
+        if quantifiable.is_empty() {
+            return ty;
+        }
+
+        // 5) 否则生成 Forall([(id, Kind::Star)], Box::new(ty))
+        let binders = quantifiable
+            .iter()
+            .map(|id| (id.clone(), TypeObject::Kind(Kind::Star)))
+            .collect::<Vec<_>>();
+        TypeObject::Forall(binders, Box::new(ty))
+    }
+
+    /// 辅助：推断 Infix 运算的返回类型，并收集必要约束
     fn infer_infix(
         &self,
         op: &Token,
         l: &TypeObject,
         r: &TypeObject,
     ) -> Result<TypeObject, TypeError> {
-        use TypeObject::*;
         match op {
             Token::Plus | Token::Sub | Token::Mul | Token::Div => {
-                if l == r {
-                    match l {
-                        Int => Ok(Int),
-                        Float => Ok(Float),
-                        _ => Err(TypeError::InvalidOperation {
-                            operation: format!("arith {}", op),
-                            typ: l.to_string(),
-                        }),
-                    }
-                } else {
-                    Err(TypeError::TypeMismatch {
-                        expected: l.to_string(),
-                        found: r.to_string(),
-                        context: "arith".into(),
-                    })
-                }
+                // 要求 l == r == Int 或 Float
+                self.add_constraint(l.clone(), r.clone())?;
+                let result = self.fresh_var();
+                // 添加约束：l == result 并且 l ∈ {Int, Float}
+                // 先 unify(l, result)
+                self.add_constraint(l.clone(), result.clone())?;
+                Ok(result)
             }
             Token::Equal | Token::NotEqual => {
-                self.unify(l, r, "cmp")?;
+                // 相等比较：两边必须类型相同
+                self.add_constraint(l.clone(), r.clone())?;
                 Ok(TypeObject::Bool)
             }
             Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual => {
-                if l == r && (matches!(l, Int | Float)) {
-                    Ok(TypeObject::Bool)
-                } else {
-                    Err(TypeError::InvalidOperation {
-                        operation: format!("cmp {}", op),
-                        typ: l.to_string(),
-                    })
-                }
+                // 也要求两边相等，且是 Int 或 Float
+                self.add_constraint(l.clone(), r.clone())?;
+                let result = TypeObject::Bool;
+                Ok(result)
             }
             Token::And | Token::Or => {
-                if l == &TypeObject::Bool && r == &TypeObject::Bool {
-                    Ok(TypeObject::Bool)
-                } else {
-                    Err(TypeError::TypeMismatch {
-                        expected: "Bool".into(),
-                        found: l.to_string(),
-                        context: "logic".into(),
-                    })
-                }
+                // 要求左右都是 Bool
+                self.add_constraint(l.clone(), TypeObject::Bool)?;
+                self.add_constraint(r.clone(), TypeObject::Bool)?;
+                Ok(TypeObject::Bool)
             }
             _ => Err(TypeError::InvalidOperation {
-                operation: format!("infix {}", op),
-                typ: l.to_string(),
+                operation: format!("infix {:?}", op),
+                typ: format!("{:?}, {:?}", l, r),
             }),
         }
     }
 
+    /// 辅助：推断 Prefix 运算
     fn infer_prefix(&self, op: &Token, sub: &TypeObject) -> Result<TypeObject, TypeError> {
         match op {
-            Token::Sub => match sub {
-                TypeObject::Int => Ok(TypeObject::Int),
-                TypeObject::Float => Ok(TypeObject::Float),
-                _ => Err(TypeError::InvalidOperation {
-                    operation: "unary-".into(),
-                    typ: sub.to_string(),
-                }),
-            },
-            Token::Not if sub == &TypeObject::Bool => Ok(TypeObject::Bool),
-            _ => Err(TypeError::InvalidOperation {
-                operation: format!("prefix {}", op),
-                typ: sub.to_string(),
-            }),
-        }
-    }
-
-    fn infer_pattern(&self, pattern: &Pattern) -> Result<TypeObject, TypeError> {
-        match pattern {
-            Pattern::Ident(n) => Ok(self.env.borrow().get_bind(n).unwrap_or(TypeObject::Any)),
-            Pattern::Literal(l) => Checker::infer_literal(l),
-            Pattern::ADTConstructor { name, .. } => {
-                let t = self
-                    .env
-                    .borrow()
-                    .get_bind(name)
-                    .ok_or(TypeError::UndefinedVariable(name.clone()))?;
-                if let TypeObject::ADTDef {
-                    name: _,
-                    constructors,
-                    ..
-                } = t.clone()
-                {
-                    for (constructor, _definition) in constructors {
-                        if &constructor == name {
-                            // if fts.len() != args.len() {
-                            //     return Err(TypeError::ArityMismatch {
-                            //         expected: fts.len(),
-                            //         found: args.len(),
-                            //         context: format!("ctor {}", name),
-                            //     });
-                            // // }
-                            // for (p, ft) in args.iter().zip(fts.iter()) {
-                            //     let pt = self.infer_pattern(p)?;
-                            //     let rt = self.resolve(ft)?;
-                            //     self.unify(&rt, &pt, "pat arg")?;
-                            // }
-                            return Ok(t);
-                        }
-                    }
-                }
-                Err(TypeError::UndefinedVariable(name.clone()))
+            Token::Sub => {
+                // 要求 sub ∈ {Int, Float}
+                let result = self.fresh_var();
+                self.add_constraint(sub.clone(), result.clone())?;
+                Ok(result)
             }
+            Token::Not => {
+                self.add_constraint(sub.clone(), TypeObject::Bool)?;
+                Ok(TypeObject::Bool)
+            }
+            _ => Err(TypeError::InvalidOperation {
+                operation: format!("prefix {:?}", op),
+                typ: format!("{}", sub),
+            }),
         }
     }
 }

@@ -1,6 +1,8 @@
 use crate::env::error::EnvError;
 use std::fmt;
 
+use super::object::TypeObject;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeError {
     UndefinedVariable(String),
@@ -28,6 +30,11 @@ pub enum TypeError {
     },
     NotKind {
         found: String,
+    },
+    InfiniteType(String, TypeObject),
+    CannotUnify {
+        t1: TypeObject,
+        t2: TypeObject,
     },
 }
 
@@ -73,6 +80,8 @@ impl fmt::Display for TypeError {
                 write!(f, "Invalid operation '{}' on type '{}'", operation, typ)
             }
             NotKind { found } => write!(f, "Not a kind: '{}'", found),
+            InfiniteType(id, typ) => write!(f, "Type '{}' has infinite to {}", typ, id),
+            CannotUnify { t1, t2 } => write!(f, "Cannot unify '{}' and '{}'", t1, t2),
         }
     }
 }

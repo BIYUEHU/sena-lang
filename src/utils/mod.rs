@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use crate::{
     checker::{
         ast::{
@@ -9,7 +7,6 @@ use crate::{
         object::TypeObject,
         Checker,
     },
-    env::new_checker_env,
     evaluator::{object::Object, Evaluator},
     lexer::Lexer,
     parser::{
@@ -209,7 +206,7 @@ pub fn to_checked_expr(expr: Expr) -> CheckedExpr {
             type_annotation: TypeObject::Any,
         },
         Expr::Function { params, body, .. } => CheckedExpr::Function {
-            params,
+            params: params.into_iter().map(|(name, _)| name).collect(),
             body: Box::new(to_checked_expr(*body)),
             type_annotation: TypeObject::Any,
         },
@@ -256,30 +253,21 @@ pub fn to_checked_expr(expr: Expr) -> CheckedExpr {
 }
 
 pub fn to_checked_stmt(stmt: Stmt) -> CheckedStmt {
-    let env = new_checker_env();
     match stmt.clone() {
-        Stmt::Let {
-            name,
-            type_annotation,
-            value,
-        } => CheckedStmt::Let {
+        Stmt::Let { name, value, .. } => CheckedStmt::Let {
             name: name.clone(),
-            type_annotation: Checker::resolve(&type_annotation, Rc::clone(&env))
-                .unwrap_or(TypeObject::Any),
+            type_annotation: TypeObject::Any,
             value: to_checked_expr(*value),
         },
         Stmt::Type {
             name,
             params,
-            kind_annotation,
             variants,
+            ..
         } => CheckedStmt::Type {
             name: name.clone(),
             params: params.clone(),
-            kind_annotation: Checker::resolve_kind(
-                &Checker::resolve(&kind_annotation, Rc::clone(&env)).unwrap_or(TypeObject::Any),
-            )
-            .unwrap_or(Kind::Star),
+            kind_annotation: Kind::Star,
             variants: {
                 variants
                     .iter()
@@ -291,13 +279,7 @@ pub fn to_checked_stmt(stmt: Stmt) -> CheckedStmt {
                         TypeVariantFields::Tuple(fields) => CheckedTypeVariant {
                             name: variant.name.clone(),
                             fields: CheckedTypeVariantFields::Tuple(
-                                fields
-                                    .iter()
-                                    .map(|f| {
-                                        Checker::resolve(f, Rc::clone(&env))
-                                            .unwrap_or(TypeObject::Any)
-                                    })
-                                    .collect::<Vec<_>>(),
+                                fields.iter().map(|_| TypeObject::Any).collect::<Vec<_>>(),
                             ),
                         },
                         _ => unimplemented!("record type variant"),
