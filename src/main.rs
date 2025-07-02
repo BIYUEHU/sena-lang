@@ -3,8 +3,11 @@ use mihama::env::{new_checker_env, new_evaluator_env};
 use mihama::evaluator::object::{PrettyPrint, TypeInfo};
 use mihama::evaluator::Evaluator;
 use mihama::lexer::Lexer;
-use mihama::utils::{eval_code, get_checked_ast, parse_code, unsafe_eval_code, RunningMode};
-use std::io::Write;
+use mihama::utils::{
+    eval_code, get_checked_ast, parse_code, transofrm_code, unsafe_eval_code, RunningMode,
+};
+use std::fs;
+use std::io::{self, Write};
 
 const PROMPT: &str = ">> ";
 
@@ -36,13 +39,13 @@ fn main() {
 
     loop {
         print!("{}", PROMPT);
-        if std::io::stdout().flush().is_err() {
+        if io::stdout().flush().is_err() {
             println!("error: flush err")
         }
 
         input.clear();
         let mut view_type_info = false;
-        std::io::stdin().read_line(&mut input).unwrap();
+        io::stdin().read_line(&mut input).unwrap();
 
         if input.starts_with(".exit") {
             println!("Goodbye!");
@@ -90,13 +93,31 @@ fn main() {
                 env = new_evaluator_env();
                 evaluator = Evaluator::new(env);
             }
-            match std::fs::read_to_string(input.split_whitespace().last().unwrap()) {
+            match fs::read_to_string(input.split_whitespace().last().unwrap()) {
                 Ok(code) => code,
                 Err(err) => {
                     println!("REPL error: {}", err);
                     continue;
                 }
             }
+        } else if input.starts_with(".trans") {
+            let args = input.split_whitespace().collect::<Vec<_>>();
+            if args.len() != 3 {
+                println!("Invalid arguments, expected: .trans <from> <to>");
+                continue;
+            };
+            match fs::write(
+                args[2],
+                transofrm_code(fs::read_to_string(args[1]).unwrap().as_str()).unwrap(),
+            ) {
+                Ok(_) => {
+                    println!("Transpiled code written to {}", args[2]);
+                }
+                Err(err) => {
+                    println!("Error writing transpiled code: {}", err);
+                }
+            }
+            continue;
         } else if input.starts_with(".t") {
             view_type_info = true;
             input.clone().as_str()[2..].to_string()

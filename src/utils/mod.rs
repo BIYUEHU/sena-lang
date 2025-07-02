@@ -13,7 +13,7 @@ use crate::{
         ast::{Expr, Kind, Stmt, TypeExpr, TypeVariantFields, UnsafeProgram},
         error::ParseError,
         Parser,
-    },
+    }, transpiler::{Transpiler, javascript::JavaScriptTranspiler},
 };
 
 pub fn is_uppercase_first_letter(str: &str) -> bool {
@@ -149,6 +149,12 @@ pub fn unsafe_eval_code(code: &str, evaluator: &mut Evaluator) -> Result<Object,
     Ok(evaluator
         .eval_unsafe(&get_ast(code)?)
         .map_err(|err| format!("Evaluator error: {}", err))?)
+}
+
+pub fn transofrm_code(code: &str) -> Result<String, String> {
+    Ok(JavaScriptTranspiler::new().transpile(&get_ast(code)?.into_iter()
+    .map(|stmt| to_checked_stmt(stmt.clone()))
+    .collect::<Vec<_>>()))
 }
 
 pub fn is_op_char(ch: char) -> bool {
