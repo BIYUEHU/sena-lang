@@ -40,7 +40,7 @@ impl Evaluator {
             }),
         );
         custom_funcs.insert(
-            "get_timestrap".to_string(),
+            "get_timestamp".to_string(),
             Box::new(|_| Ok((UNIX_EPOCH.elapsed().unwrap().as_millis() as i64).into())),
         );
         let env2 = Rc::clone(&env);
@@ -59,7 +59,7 @@ impl Evaluator {
             }),
         );
         custom_funcs.insert(
-            "connect".to_string(),
+            "concat".to_string(),
             Box::new(|args| {
                 Ok(args
                     .iter()
@@ -539,11 +539,51 @@ impl Evaluator {
 
 #[cfg(test)]
 mod tests {
+    use crate::env::new_evaluator_env;
     use crate::evaluator::{Evaluator, Object};
-    use crate::{env::new_evaluator_env, utils::unsafe_eval_code};
+    use crate::lexer::Lexer;
+    use crate::parser::ast::UnsafeProgram;
+    use crate::parser::Parser;
 
     fn u(code: &str) -> Object {
-        match unsafe_eval_code(code, &mut Evaluator::new(new_evaluator_env())) {
+        let mut error = None;
+        let token_data = Lexer::new(code)
+            .filter_map(|result| match result {
+                Ok(token_data) => Some(token_data),
+                Err(err) => {
+                    if error.is_none() {
+                        error = Some(format!("Lexer error: {}", err));
+                    }
+                    None
+                }
+            })
+            .collect();
+        if let Some(err) = error {
+            return err.into();
+        };
+
+        let program = Parser::new(token_data, true)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|result| match result {
+                Ok(stmt) => Some(stmt),
+                Err(err) => {
+                    if error.is_none() {
+                        error = Some(format!("Parser error: {}", err));
+                    }
+                    None
+                }
+            })
+            .collect::<UnsafeProgram>();
+
+        if let Some(err) = error {
+            return err.into();
+        }
+
+        match Evaluator::new(new_evaluator_env())
+            .eval_unsafe(&program)
+            .map_err(|err| format!("Evaluator error: {}", err))
+        {
             Ok(obj) => obj,
             Err(e) => e.into(),
         }

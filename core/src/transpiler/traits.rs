@@ -1,4 +1,7 @@
-use crate::{checker::ast::{CheckedCase, CheckedExpr, CheckedStmt}, parser::ast::Literal};
+use crate::{
+    checker::ast::{CheckedCase, CheckedExpr, CheckedStmt},
+    parser::ast::Literal,
+};
 
 pub trait CodeGenerator {
     type Output;
@@ -17,7 +20,7 @@ pub trait CodeGenerator {
 
 pub trait Transpiler {
     type Generator: CodeGenerator;
-    
+
     fn new() -> Self;
     fn transpile(&mut self, program: &[CheckedStmt]) -> <Self::Generator as CodeGenerator>::Output;
 }

@@ -18,6 +18,6 @@ let fibonaci: Int -> Int = (n) =>
   | n if n <= 2 => 1
   | n => fibonaci(n - 1) + fibonaci(n - 2)
 
-let start = get_timestrap()
+let start = get_timestamp()
 print(fibonaci(5))
-print(get_timestrap() - start)
+print(get_timestamp() - start)

@@ -1,6 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
-use mihama::{
+use mihama::utils::{eval_code, get_checked_ast, parse_code, unsafe_eval_code, RunningMode};
+use mihama_core::{
     checker::Checker,
     env::{new_checker_env, new_evaluator_env},
     evaluator::{
@@ -8,7 +9,6 @@ use mihama::{
         Evaluator,
     },
     lexer::Lexer,
-    utils::{eval_code, get_checked_ast, parse_code, unsafe_eval_code, RunningMode},
 };
 
 use crate::example::{DEMO_CODE, FIBONACI_CODE, INFIX_CODE, LIST_CODE, MATCH_CODE};
@@ -33,7 +33,7 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
             Ok(Object::Unit)
         }),
     );
-    evaluator.set_custom_func("get_timestrap".to_string(), Box::new(|_| Ok(1.into())));
+    evaluator.set_custom_func("get_timestamp".to_string(), Box::new(|_| Ok(1.into())));
 
     match mode {
         RunningMode::Lexer => {

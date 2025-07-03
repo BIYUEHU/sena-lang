@@ -1,8 +1,9 @@
 use super::traits::*;
 use crate::checker::ast::*;
+use crate::checker::object::TypeObject;
 use crate::lexer::token::Token;
 use crate::parser::ast::{Literal, Pattern};
-use std::collections::HashMap;
+use crate::utils::{is_op_char, to_checked_expr};
 
 pub struct JavaScriptTranspiler {
     generator: JavaScriptGenerator,
@@ -23,19 +24,12 @@ impl Transpiler for JavaScriptTranspiler {
 }
 
 pub struct JavaScriptGenerator {
-    symbol_operators: HashMap<String, String>,
     indentation_level: usize,
 }
 
 impl JavaScriptGenerator {
     pub fn new() -> Self {
-        let mut symbol_operators = HashMap::new();
-        symbol_operators.insert("#:#".to_string(), "colon".to_string());
-        symbol_operators.insert("#$#".to_string(), "dollar".to_string());
-        symbol_operators.insert("#.#".to_string(), "dot".to_string());
-
         Self {
-            symbol_operators,
             indentation_level: 0,
         }
     }
@@ -55,35 +49,25 @@ impl JavaScriptGenerator {
     }
 
     fn sanitize_identifier(&self, name: &str) -> String {
-        if let Some(js_name) = self.symbol_operators.get(name) {
-            js_name.clone()
-        } else if name.starts_with('#') && name.ends_with('#') {
-            // 处理其他符号操作符
-            name.chars()
-                .filter(|&c| c != '#')
-                .map(|c| match c {
-                    ':' => "colon",
-                    '$' => "dollar",
-                    '.' => "dot",
-                    '+' => "plus",
-                    '-' => "minus",
-                    '*' => "multiply",
-                    '/' => "divide",
-                    '%' => "modulo",
-                    '=' => "equals",
-                    '<' => "less",
-                    '>' => "greater",
-                    '!' => "not",
-                    '&' => "and",
-                    '|' => "or",
-                    '^' => "xor",
-                    _ => "_",
-                })
-                .collect::<Vec<_>>()
-                .join("")
-        } else {
-            name.to_string()
-        }
+        name.chars()
+            .map(|ch| match ch {
+                '+' => 'P',
+                '-' => 'S',
+                '*' => 'M',
+                '/' => 'D',
+                '%' => 'M',
+                '^' => 'P',
+                '=' => 'A',
+                '>' => 'G',
+                '<' => 'L',
+                '!' => 'N',
+                '|' => 'R',
+                '$' => 'O',
+                ':' => 'C',
+                '.' => 'T',
+                s => s,
+            })
+            .collect()
     }
 
     fn generate_let_statement(&mut self, name: &str, value: &CheckedExpr) -> String {
@@ -162,10 +146,18 @@ impl JavaScriptGenerator {
         } else if params.len() == 1 {
             format!("{}({})", callee_str, self.generate_expression(&params[0]))
         } else {
-            // 对于多参数调用，生成链式调用
-            params.iter().fold(callee_str, |acc, param| {
-                format!("{}({})", acc, self.generate_expression(param))
-            })
+            // params.iter().fold(callee_str, |acc, param| {
+            //     format!("{}({})", acc, self.generate_expression(param))
+            // })
+            format!(
+                "{}({})",
+                callee_str,
+                params
+                    .into_iter()
+                    .map(|param| self.generate_expression(param))
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            )
         }
     }
 
@@ -232,22 +224,25 @@ impl JavaScriptGenerator {
 
     fn generate_infix_expression(
         &mut self,
-        op: &str,
+        op: String,
         left: &CheckedExpr,
         right: &CheckedExpr,
     ) -> String {
         let left_str = self.generate_expression(left);
         let right_str = self.generate_expression(right);
 
-        let js_op = match op {
-            "==" => "===",
-            "!=" => "!==",
-            "&&" => "&&",
-            "||" => "||",
-            _ => op,
-        };
-
-        format!("{} {} {}", left_str, js_op, right_str)
+        if op.chars().next().map(is_op_char).unwrap_or(false) {
+            let js_op = match op.as_str() {
+                "==" => "===",
+                "!=" => "!==",
+                "&&" => "&&",
+                "||" => "||",
+                _ => op.as_str(),
+            };
+            format!("{} {} {}", left_str, js_op, right_str)
+        } else {
+            format!("{}({}, {})", op, left_str, right_str)
+        }
     }
 
     fn generate_pattern_guard(
@@ -263,14 +258,12 @@ impl JavaScriptGenerator {
                 if name == "_" {
                     "true".to_string()
                 } else {
-                    format!("true") // 标识符模式总是匹配
+                    format!("true")
                 }
             }
             Pattern::Literal(value) => {
                 let literal_str = self.generate_literal(value);
                 let condition = format!("{} === {}", expr_str, literal_str);
-
-                // 如果有守卫条件，添加到匹配条件中
                 match guard {
                     CheckedExpr::Literal {
                         value: Literal::Bool(true),
@@ -291,14 +284,19 @@ impl JavaScriptGenerator {
                         _ => format!("{} && {}", tag_check, self.generate_expression(guard)),
                     }
                 } else {
-                    // TODO: 处理构造器参数的模式匹配
                     let mut conditions = vec![tag_check];
+                    let mut bindings = Vec::new();
 
-                    // 添加参数匹配条件
                     for (i, param) in args.iter().enumerate() {
                         match param {
                             Pattern::Ident(name) if name != "_" => {
-                                // 绑定变量，不需要额外条件
+                                bindings.push(format!(
+                                    // TODO: 处理变量绑定
+                                    "globalThis.{} = {}.value[{}]",
+                                    self.sanitize_identifier(name),
+                                    expr_str,
+                                    i
+                                ));
                             }
                             Pattern::Literal(value) => {
                                 let param_check = format!(
@@ -309,19 +307,54 @@ impl JavaScriptGenerator {
                                 );
                                 conditions.push(param_check);
                             }
-                            _ => {
-                                // TODO: 处理嵌套模式
+                            Pattern::ADTConstructor {
+                                name: nested_name,
+                                args: nested_args,
+                            } => {
+                                let nested_expr_str = format!("{}.value[{}]", expr_str, i);
+                                let nested_pattern = Pattern::ADTConstructor {
+                                    name: nested_name.clone(),
+                                    args: nested_args.clone(),
+                                };
+                                let nested_guard = CheckedExpr::Literal {
+                                    value: Literal::Bool(true),
+                                    type_annotation: TypeObject::Any,
+                                };
+
+                                let temp_expr = CheckedExpr::Internal {
+                                    value: nested_expr_str,
+                                    type_annotation: TypeObject::Any,
+                                };
+
+                                let nested_condition = self.generate_pattern_guard(
+                                    &temp_expr,
+                                    &nested_pattern,
+                                    &nested_guard,
+                                );
+                                conditions.push(nested_condition);
                             }
+                            _ => {}
                         }
                     }
 
                     let full_condition = conditions.join(" && ");
-                    match guard {
+                    let final_condition = match guard {
                         CheckedExpr::Literal {
                             value: Literal::Bool(true),
                             ..
                         } => full_condition,
                         _ => format!("{} && {}", full_condition, self.generate_expression(guard)),
+                    };
+
+                    // 如果有变量绑定，需要在条件中包含绑定逻辑
+                    if bindings.is_empty() {
+                        final_condition
+                    } else {
+                        format!(
+                            "({} && (() => {{ {}; return true; }})())",
+                            final_condition,
+                            bindings.join("; ")
+                        )
                     }
                 }
             }
@@ -389,41 +422,48 @@ impl CodeGenerator for JavaScriptGenerator {
             CheckedExpr::Block { stmts, .. } => self.generate_block_expression(stmts),
             CheckedExpr::Infix {
                 op, left, right, ..
-            } => {
-                let op_str = match op {
-                    Token::Plus => "+",
-                    Token::Sub => "-",
-                    Token::Mul => "*",
-                    Token::Div => "/",
-                    Token::Mod => "%",
-                    Token::Pow => "**",
-                    Token::Equal => "==",
-                    Token::NotEqual => "!=",
-                    Token::Less => "<",
-                    Token::LessEqual => "<=",
-                    Token::Greater => ">",
-                    Token::GreaterEqual => ">=",
-                    Token::And => "&&",
-                    Token::Or => "||",
-                    _ => "unknown_op",
-                };
-                self.generate_infix_expression(op_str, left, right)
-            }
+            } => self.generate_infix_expression(
+                match op {
+                    Token::Plus => "+".to_string(),
+                    Token::Sub => "-".to_string(),
+                    Token::Mul => "*".to_string(),
+                    Token::Div => "/".to_string(),
+                    Token::Mod => "%".to_string(),
+                    Token::Pow => "**".to_string(),
+                    Token::Equal => "==".to_string(),
+                    Token::NotEqual => "!=".to_string(),
+                    Token::Less => "<".to_string(),
+                    Token::LessEqual => "<=".to_string(),
+                    Token::Greater => ">".to_string(),
+                    Token::GreaterEqual => ">=".to_string(),
+                    Token::And => "&&".to_string(),
+                    Token::Or => "||".to_string(),
+                    Token::InfixIdent(str) => str.clone(),
+                    Token::InfixFixity(tokens) => self.sanitize_identifier(
+                        tokens
+                            .into_iter()
+                            .map(|t| t.to_string())
+                            .collect::<String>()
+                            .as_str(),
+                    ),
+                    _ => self.sanitize_identifier(op.to_string().as_str()),
+                },
+                left,
+                right,
+            ),
             CheckedExpr::Prefix { op, expr, .. } => {
                 let op_str = match op {
                     Token::Sub => "-",
                     Token::Not => "!",
-                    _ => "unknown_prefix_op",
+                    _ => unreachable!(),
                 };
                 format!("{}{}", op_str, self.generate_expression(expr))
             }
-            CheckedExpr::Internal { value, .. } => {
-                // 处理内部函数，如 print
-                match value.as_str() {
-                    "print" => "console.log".to_string(),
-                    _ => value.clone(),
-                }
-            }
+            // CheckedExpr::Internal { value, .. } => match value.as_str() {
+            //     "print" => "console.log".to_string(),
+            //     _ => value.clone(),
+            // },
+            _ => unreachable!(),
         }
     }
 
@@ -434,12 +474,13 @@ impl CodeGenerator for JavaScriptGenerator {
             Literal::String(s) => format!("\"{}\"", s.replace("\"", "\\\"")),
             Literal::Char(c) => format!("'{}'", c),
             Literal::Bool(b) => b.to_string(),
-            // Literal::Array(elements) => {
-            //     let element_strs: Vec<String> = elements.iter()
-            //         .map(|elem| self.generate_literal(elem))
-            //         .collect();
-            //     format!("[{}]", element_strs.join(", "))
-            // }
+            Literal::Array(elements) => {
+                let element_strs: Vec<String> = elements
+                    .iter()
+                    .map(|elem| self.generate_expression(&to_checked_expr(elem.clone())))
+                    .collect();
+                format!("[{}]", element_strs.join(", "))
+            }
             _ => unimplemented!(),
         }
     }
@@ -453,7 +494,6 @@ impl CodeGenerator for JavaScriptGenerator {
             conditions.push(format!("{} ? {}", condition, body));
         }
 
-        // 添加默认的错误抛出
         conditions.push(
             "(() => { throw new MihamaError(\"Match pattern not exhaustive\") })()".to_string(),
         );
@@ -489,7 +529,10 @@ const createMihamaValue = (tag, value) => ({ value_tag: tag, value })
 
 const [MihamaKind, MihamaString, MihamaInt, MihamaBool, MihamaChar] = ["Kind", "String", "Int", "Bool", "Char"].map(createMihamaType)
 
-// 以上为预定义内容"#.to_string()
+const print = console.log
+const get_timestamp = () => new Date().getTime() / 1000
+const concat = (a, b) => `${a}${b}`
+"#.to_string()
     }
 
     fn curry_function(&self, params_count: usize, body: &str) -> String {

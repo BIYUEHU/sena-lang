@@ -18,9 +18,9 @@ let fibonaci: Int -> Int = (n) =>
   | n if n <= 2 => 1
   | n => fibonaci(n - 1) + fibonaci(n - 2)
 
-let start = get_timestrap()
+let start = get_timestamp()
 print(fibonaci(5))
-print(get_timestrap() - start)
+print(get_timestamp() - start)
 "#;
 
 pub const FIBONACI_CODE: &'static str = r#"let fibonaci = (n: Int): Int => {
@@ -86,7 +86,7 @@ let #++# = (list1, list2) =>
       Cons(a, b ++ list2)
     | Nil => list2
 
-let #+++# = (str1, str2) => connect(str1, str2)
+let #+++# = (str1, str2) => concat(str1, str2)
 
 let show = (a) =>
   let f = (a) =>

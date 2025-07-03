@@ -7,8 +7,8 @@ let fibonaci2: Int -> Int -> Int -> Int = (n, first, second) =>
   if n == 2 then second
   else fibonaci(n - 1, second, first + second)
 
-let start = get_timestrap()
+let start = get_timestamp()
 print(fibonaci(5))
 // print(fibonaci(42, 0, 1))
-print(get_timestrap() - start)
+print(get_timestamp() - start)
 

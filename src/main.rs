@@ -1,178 +1,116 @@
-use mihama::checker::Checker;
-use mihama::env::{new_checker_env, new_evaluator_env};
-use mihama::evaluator::object::{PrettyPrint, TypeInfo};
-use mihama::evaluator::Evaluator;
-use mihama::lexer::Lexer;
-use mihama::utils::{
-    eval_code, get_checked_ast, parse_code, transofrm_code, unsafe_eval_code, RunningMode,
-};
-use std::fs;
-use std::io::{self, Write};
+use clap::{Parser, Subcommand};
+use mihama::utils::RunningMode;
+use std::path::PathBuf;
 
-const PROMPT: &str = ">> ";
+use mihama::cli::*;
+use mihama::repl::*;
 
-// use std::thread;
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+#[command(name = "mihama")]
+#[command(about = "A modern functional programming language with dependent types")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
 
-// fn main() {
-//     thread::Builder::new()
-//         .name("main_with_big_stack".into())
-//         .stack_size(32 * 1024 * 120024) // 32MB
-//         .spawn(main_with_stack)
-//         .unwrap()
-//         .join()
-//         .unwrap();
-// }
+    /// Enable verbose output
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Start interactive REPL
+    Repl {
+        /// Initial mode (lexer/parser/checker/evaluator/unsafe)
+        #[arg(short, long, default_value = "evaluator")]
+        mode: String,
+    },
+    /// Run a Mihama source file
+    Run {
+        /// Source file path
+        file: PathBuf,
+        /// Running mode
+        #[arg(short, long, default_value = "evaluator")]
+        mode: String,
+        /// Show type information
+        #[arg(short, long)]
+        types: bool,
+    },
+    /// Transpile source file to target language
+    Trans {
+        /// Source file path
+        input: PathBuf,
+        /// Output file path
+        output: PathBuf,
+        /// Target language (javascript/python/c)
+        #[arg(short, long, default_value = "javascript")]
+        target: String,
+    },
+    /// Check source file for type errors
+    Check {
+        /// Source file path
+        file: PathBuf,
+        /// Show detailed type information
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Parse and display AST
+    Parse {
+        /// Source file path
+        file: PathBuf,
+        /// Output format (debug/json/pretty)
+        #[arg(short, long, default_value = "debug")]
+        format: String,
+    },
+    /// Tokenize and display tokens
+    Lex {
+        /// Source file path
+        file: PathBuf,
+    },
+    /// Format source code
+    Format {
+        /// Source file path
+        file: PathBuf,
+        /// Write result back to file
+        #[arg(short, long)]
+        write: bool,
+    },
+}
 
 fn main() {
-    println!("Welcome to the Mihama programming language REPL!");
-    println!("Input '.read <file>' to parse from a file");
-    println!("Input '.exit' to exit the REPL");
-    println!(
-        "Input '.switch <\"l\"|\"p\"|\"c\"|\"e\"|\"u\">' to switch the REPL mode, default is parser"
-    );
+    let cli = Cli::parse();
 
-    let mut input = String::new();
-    let mut mode = RunningMode::Evaluator;
-    let mut env = new_evaluator_env();
-    let mut evaluator = Evaluator::new(env);
-    let mut checker = Checker::new(new_checker_env());
-
-    loop {
-        print!("{}", PROMPT);
-        if io::stdout().flush().is_err() {
-            println!("error: flush err")
-        }
-
-        input.clear();
-        let mut view_type_info = false;
-        io::stdin().read_line(&mut input).unwrap();
-
-        if input.starts_with(".exit") {
-            println!("Goodbye!");
-            break;
-        }
-
-        if input.starts_with(".switch") {
-            mode = match input.split_whitespace().last().unwrap() {
-                "l" => {
-                    println!("Switched to lexer mode");
-                    RunningMode::Lexer
-                }
-                "p" => {
-                    println!("Switched to parser mode");
-                    RunningMode::Parser
-                }
-                "c" => {
-                    println!("Switched to checker mode");
-                    RunningMode::Checker
-                }
-                "e" => {
-                    println!("Switched to evaluator mode");
-                    RunningMode::Evaluator
-                }
-                "u" => {
-                    println!("Switched to unsafe evaluator mode");
-                    RunningMode::UnsafeEvaluator
-                }
-                _ => {
-                    println!("Invalid mode");
-                    continue;
-                }
-            };
-            continue;
-        }
-
-        if input.starts_with(".clear") {
-            env = new_evaluator_env();
-            evaluator = Evaluator::new(env);
-            continue;
-        }
-
-        let code = if input.starts_with(".read") {
-            if input.starts_with(".readc") {
-                env = new_evaluator_env();
-                evaluator = Evaluator::new(env);
+    if let Some(command) = cli.command {
+        match command {
+            Commands::Repl { mode } => {
+                run_repl(parse_mode(&mode), cli.verbose);
             }
-            match fs::read_to_string(input.split_whitespace().last().unwrap()) {
-                Ok(code) => code,
-                Err(err) => {
-                    println!("REPL error: {}", err);
-                    continue;
-                }
+            Commands::Run { file, mode, types } => {
+                run_file(file, parse_mode(&mode), types, cli.verbose);
             }
-        } else if input.starts_with(".trans") {
-            let args = input.split_whitespace().collect::<Vec<_>>();
-            if args.len() != 3 {
-                println!("Invalid arguments, expected: .trans <from> <to>");
-                continue;
-            };
-            match fs::write(
-                args[2],
-                transofrm_code(fs::read_to_string(args[1]).unwrap().as_str()).unwrap(),
-            ) {
-                Ok(_) => {
-                    println!("Transpiled code written to {}", args[2]);
-                }
-                Err(err) => {
-                    println!("Error writing transpiled code: {}", err);
-                }
+            Commands::Trans {
+                input,
+                output,
+                target,
+            } => {
+                transpile_file(input, output, &target, cli.verbose);
             }
-            continue;
-        } else if input.starts_with(".t") {
-            view_type_info = true;
-            input.clone().as_str()[2..].to_string()
-        } else {
-            input.clone()
-        };
-
-        match mode {
-            RunningMode::Lexer => {
-                for token in Lexer::new(&code) {
-                    match token {
-                        Ok(token) => println!(" -> {}", token),
-                        Err(err) => println!("{}", err),
-                    }
-                }
+            Commands::Check { file, verbose } => {
+                check_file(file, verbose || cli.verbose);
             }
-            RunningMode::Parser => match parse_code(&code) {
-                Ok(parser) => {
-                    for stmt in parser {
-                        match stmt {
-                            Ok(stmt) => println!(" : {:?}", stmt),
-                            Err(err) => println!("{}", err),
-                        }
-                    }
-                }
-                Err(err) => println!("Parser error: {}", err),
-            },
-            RunningMode::Checker => match get_checked_ast(&code, &mut checker) {
-                Ok(program) => {
-                    for stmt in program {
-                        println!(" : {:?}", stmt)
-                    }
-                }
-                Err(err) => println!("Checker error: {}", err),
-            },
-            RunningMode::Evaluator => match eval_code(&code, &mut checker, &mut evaluator) {
-                Ok(value) => {
-                    if view_type_info {
-                        println!("{} : {}", value.pretty_print(), value.type_info())
-                    } else {
-                        println!("{}", value.to_string())
-                    }
-                }
-                Err(err) => println!("{}", err),
-            },
-            RunningMode::UnsafeEvaluator => match unsafe_eval_code(&code, &mut evaluator) {
-                Ok(value) => {
-                    if view_type_info {
-                        println!("{} : {}", value.pretty_print(), value.type_info())
-                    } else {
-                        println!("{}", value.to_string())
-                    }
-                }
-                Err(err) => println!("{}", err),
-            },
+            Commands::Parse { file, format } => {
+                parse_file(file, &format, cli.verbose);
+            }
+            Commands::Lex { file } => {
+                lex_file(file, cli.verbose);
+            }
+            Commands::Format { file, write } => {
+                format_file(file, write, cli.verbose);
+            }
         }
+    } else {
+        // 默认进入REPL
+        run_repl(RunningMode::Evaluator, cli.verbose);
     }
 }

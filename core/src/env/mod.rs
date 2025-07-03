@@ -112,7 +112,7 @@ pub fn new_checker_env() -> Rc<RefCell<CheckerEnv>> {
     )
     .unwrap();
     env.insert_bind(
-        "get_timestrap".to_string(),
+        "get_timestamp".to_string(),
         TypeObject::Function(
             Box::new(TypeObject::Unit.into()),
             Box::new(TypeObject::Float.into()),
@@ -154,11 +154,11 @@ pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
     )
     .unwrap();
     env.insert_bind(
-        "get_timestrap".to_string(),
+        "get_timestamp".to_string(),
         Object::Function {
             params: vec![],
             body: CheckedExpr::Internal {
-                value: "get_timestrap".to_string(),
+                value: "get_timestamp".to_string(),
                 type_annotation: TypeObject::Float,
             },
             type_annotation: TypeObject::Function(
@@ -186,11 +186,11 @@ pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
     )
     .unwrap();
     env.insert_bind(
-        "connect".to_string(),
+        "concat".to_string(),
         Object::Function {
             params: vec!["...args".to_string()],
             body: CheckedExpr::Internal {
-                value: "connect".to_string(),
+                value: "concat".to_string(),
                 type_annotation: TypeObject::String,
             },
             type_annotation: TypeObject::Function(

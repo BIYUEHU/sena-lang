@@ -1,6 +1,6 @@
 [package]
 edition = "2021"
-name = "mihama"
+name = "mihama-core"
 version = "0.0.1"
 authors = ["Arimura Sena <me@hotaru.icu>"]
 description = "A Modern Functional and Dependent Type Programming Language Base on Rust"
@@ -9,16 +9,4 @@ keywords = ["functional", "dependent-type", "language", "type-theory", "parser"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/BIYUEHU/mihama"
 
-[profile.release]
-opt-level = 's'
-lto = true
-debug = false
-
 [dependencies]
-mihama-core = { path = "core" }
-clap = { version = "4.5.40", features = ["derive"] }
-
-[workspace]
-members = [".", "playground", "core"]
-
-

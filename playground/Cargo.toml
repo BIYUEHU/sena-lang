@@ -13,8 +13,8 @@ leptos_router = { version = "0.7" }
 console_log = "1"
 log = "0.4"
 console_error_panic_hook = "0.1"
+mihama-core = { path = "../core" }
 mihama = { path = ".." }
-
 # utils
 # strum = { version = "0.25", features = ["derive", "strum_macros"] }
 # strum_macros = "0.25"

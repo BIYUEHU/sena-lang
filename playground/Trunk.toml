@@ -51,7 +51,7 @@ open = false
 # no_error_reporting = false
 # Additional headers set for responses.
 # headers = { "test-header" = "header value", "test-header2" = "header value 2" }
-# Protocol used for autoreload WebSockets connection.
+# Protocol used for autoreload WebSockets concation.
 # ws_protocol = "ws"
 # The certificate/private key pair to use for TLS, which is enabled if both are set.
 # tls_key_path = "self_signed_certs/key.pem"

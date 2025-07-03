@@ -15,7 +15,7 @@ let #++# = (list1, list2) =>
       Cons(a, b ++ list2)
     | Nil => list2
 
-let #+++# = (str1, str2) => connect(str1, str2)
+let #+++# = (str1, str2) => concat(str1, str2)
 
 let get = (list, index) =>
   if index < 0 then Nothing
