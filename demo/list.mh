@@ -30,13 +30,13 @@ let #++# = (list1, list2) =>
 
 let #+++# = (str1, str2) => concat(str1, str2)
 
-let show = (a) =>
-  let f = (a) =>
-    match a then
+let show = (x) =>
+  let f = (x) =>
+    match x then
       | Cons(a, b) =>
         a +++ let c = f(b) in if c == "" then "" else ", " +++ c
       | Nil => ""
-  in "[" +++ f(a) +++ "]"
+  in "[" +++ f(x) +++ "]"
 
 let arr = 1 : 2 : 3 : 4 : Nil
 

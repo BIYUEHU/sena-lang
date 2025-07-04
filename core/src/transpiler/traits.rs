@@ -13,8 +13,8 @@ pub trait CodeGenerator {
 
     // 运行时支持相关
     fn runtime_support(&self) -> String;
-    fn curry_function(&self, params_count: usize, body: &str) -> String;
-    fn create_type_constructor(&self, name: &str) -> String;
+    fn curry_function(&self, params: &[String], body: &str) -> String;
+    fn create_type_constructor(&self, name: &str, params: &[String]) -> String;
     fn create_value_constructor(&self, tag: &str, value: Option<&str>) -> String;
 }
 

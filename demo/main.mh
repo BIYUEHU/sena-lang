@@ -44,9 +44,9 @@ let bar2 = {
   x + y ^ 2 * 2 / 5 - 5 % 1
 }
 
-// let #:# = (el, list) => Cons(el, list)
-// let #$# = (f, x) => f(x)
-// let #.# = (g, f) => (x) => f(g(x))
+let #:# = (el, list) => Cons(el, list)
+let #$# = (f, x) => f(x)
+let #.# = (g, f) => (x) => f(g(x))
 
 let handleScore = (x: Int) =>
   if x > 100 || x < 0 then "Fake"

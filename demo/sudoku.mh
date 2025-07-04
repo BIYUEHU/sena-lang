@@ -197,14 +197,24 @@ let solve: Grid -> Maybe(Grid) = (g) =>
           tryNumbers(0 .. 9)
     | Nothing => Just(g)
 
+// let digHoles: Grid -> Int -> Grid = (g, k) =>
+//   if k <= 0 then g
+//   else let gen = (r, c) =>
+//     if r == 9 then Nil else
+//     if c == 9 then gen(r + 1, 0) else
+//     MkPair(r, c) : gen(r, c + 1)
+//     in
+//     foldl(updateGrid(g, take(k, gen(0, 0)) ,0))
 let digHoles: Grid -> Int -> Grid = (g, k) =>
   if k <= 0 then g
   else let gen = (r, c) =>
-    if r == 9 then Nil else
-    if c == 9 then gen(r + 1, 0) else
-    MkPair(r, c) : gen(r, c + 1)
-    in
-    foldl(updateGrid(g, take(k, gen(0, 0)) ,0))
+    if r == 9 then Nil
+    else if c == 9 then gen(r + 1, 0)
+    else MkPair(r, c) : gen(r, c + 1)
+  in
+  let coords = take(k, gen(0, 0)) in
+  foldl((acc, pos) => updateGrid(acc, pos, 0), g, coords)
+
 
 let generatePuzzle: Int -> Maybe(Grid) = (clues) =>
   match solve(emptyGrid) then

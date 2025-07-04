@@ -76,14 +76,19 @@ impl JavaScriptGenerator {
         format!("const {} = {}", js_name, js_value)
     }
 
-    fn generate_type_statement(&mut self, name: &str, variants: &[CheckedTypeVariant]) -> String {
+    fn generate_type_statement(
+        &mut self,
+        name: &str,
+        params: &[String],
+        variants: &[CheckedTypeVariant],
+    ) -> String {
         let mut lines = Vec::new();
 
         // 生成类型构造器
         lines.push(format!(
             "const {} = {}",
             name,
-            self.create_type_constructor(name)
+            self.create_type_constructor(name, params)
         ));
 
         // 生成变体构造器
@@ -110,7 +115,7 @@ impl JavaScriptGenerator {
                     lines.push(format!(
                         "const {} = {}",
                         variant.name,
-                        self.curry_function(params.len(), &constructor_body)
+                        self.curry_function(&params, &constructor_body)
                     ));
                 }
                 CheckedTypeVariantFields::Record(_fields) => {
@@ -134,7 +139,7 @@ impl JavaScriptGenerator {
             format!("({}) => {}", params[0], self.generate_expression(body))
         } else {
             let function_body = self.generate_expression(body);
-            self.curry_function(params.len(), &function_body)
+            self.curry_function(params, &function_body)
         }
     }
 
@@ -181,12 +186,25 @@ impl JavaScriptGenerator {
         value: &CheckedExpr,
         body: &CheckedExpr,
     ) -> String {
-        format!(
-            "(({}) => {})({})",
-            self.sanitize_identifier(name),
-            self.generate_expression(body),
-            self.generate_expression(value)
-        )
+        let mut lines = Vec::new();
+        lines.push("(() => {".to_string());
+
+        self.with_indent(|gen| {
+            lines.push(format!(
+                "{}const {} = {}",
+                gen.indent(),
+                gen.sanitize_identifier(name),
+                gen.generate_expression(value)
+            ));
+            lines.push(format!(
+                "{}return {}",
+                gen.indent(),
+                gen.generate_expression(body)
+            ));
+        });
+
+        lines.push("})()".to_string());
+        lines.join("\n")
     }
 
     fn generate_block_expression(&mut self, stmts: &[CheckedStmt]) -> String {
@@ -252,37 +270,32 @@ impl JavaScriptGenerator {
         guard: &CheckedExpr,
     ) -> String {
         let expr_str = self.generate_expression(expr);
+        let guard = match guard {
+            CheckedExpr::Literal {
+                value: Literal::Bool(true),
+                ..
+            } => "".to_string(),
+            _ => format!(" && {}", self.generate_expression(guard)),
+        };
 
         match pattern {
-            Pattern::Ident(name) => {
-                if name == "_" {
-                    "true".to_string()
-                } else {
-                    format!("true")
-                }
+            Pattern::Ident(_) => {
+                // if name == "_" {
+                "true".to_string()
+                // } else {
+                // format!("true")
+                // }
             }
             Pattern::Literal(value) => {
                 let literal_str = self.generate_literal(value);
                 let condition = format!("{} === {}", expr_str, literal_str);
-                match guard {
-                    CheckedExpr::Literal {
-                        value: Literal::Bool(true),
-                        ..
-                    } => condition,
-                    _ => format!("{} && {}", condition, self.generate_expression(guard)),
-                }
+                format!("{}{}", condition, guard)
             }
             Pattern::ADTConstructor { name, args } => {
                 let tag_check = format!("{}.value_tag === \"{}\"", expr_str, name);
 
                 if args.is_empty() {
-                    match guard {
-                        CheckedExpr::Literal {
-                            value: Literal::Bool(true),
-                            ..
-                        } => tag_check,
-                        _ => format!("{} && {}", tag_check, self.generate_expression(guard)),
-                    }
+                    format!("{}{}", tag_check, guard)
                 } else {
                     let mut conditions = vec![tag_check];
                     let mut bindings = Vec::new();
@@ -291,12 +304,12 @@ impl JavaScriptGenerator {
                         match param {
                             Pattern::Ident(name) if name != "_" => {
                                 bindings.push(format!(
-                                    // TODO: 处理变量绑定
                                     "globalThis.{} = {}.value[{}]",
                                     self.sanitize_identifier(name),
                                     expr_str,
                                     i
                                 ));
+                                // bindings.push((self.sanitize_identifier(name), i));
                             }
                             Pattern::Literal(value) => {
                                 let param_check = format!(
@@ -338,22 +351,32 @@ impl JavaScriptGenerator {
                     }
 
                     let full_condition = conditions.join(" && ");
-                    let final_condition = match guard {
-                        CheckedExpr::Literal {
-                            value: Literal::Bool(true),
-                            ..
-                        } => full_condition,
-                        _ => format!("{} && {}", full_condition, self.generate_expression(guard)),
-                    };
-
-                    // 如果有变量绑定，需要在条件中包含绑定逻辑
                     if bindings.is_empty() {
-                        final_condition
+                        format!("{}{}", full_condition, guard)
                     } else {
+                        // let mut bindings_left = vec![];
+                        // let mut should_index = 0;
+                        // for (name, index) in bindings {
+                        //     let distance = index - should_index;
+                        //     // if distance > 0 {
+                        //     for _ in 0..distance {
+                        //         bindings_left.push(" ".to_string());
+                        //     }
+                        //     bindings_left.push(name);
+                        //     should_index = index + 1;
+                        //     // }
+                        // }
+                        // format!(
+                        //     "{}__BINDINGS__const [{}] = {}.value;",
+                        //     final_condition,
+                        //     bindings_left.join(", "),
+                        //     expr_str
+                        // )
                         format!(
-                            "({} && (() => {{ {}; return true; }})())",
-                            final_condition,
-                            bindings.join("; ")
+                            "({} && (() => {{ {}; return true; }})()){}",
+                            full_condition,
+                            bindings.join("; "),
+                            guard
                         )
                     }
                 }
@@ -380,8 +403,13 @@ impl CodeGenerator for JavaScriptGenerator {
             CheckedStmt::Let { name, value, .. } => {
                 format!("{};", self.generate_let_statement(name, value))
             }
-            CheckedStmt::Type { name, variants, .. } => {
-                format!("{};", self.generate_type_statement(name, variants))
+            CheckedStmt::Type {
+                name,
+                variants,
+                params,
+                ..
+            } => {
+                format!("{};", self.generate_type_statement(name, params, variants))
             }
             CheckedStmt::Expr(expr) => self.generate_expression(expr),
             CheckedStmt::ImportAll { .. } => {
@@ -401,7 +429,10 @@ impl CodeGenerator for JavaScriptGenerator {
 
     fn generate_expression(&mut self, expr: &CheckedExpr) -> String {
         match expr {
-            CheckedExpr::Ident { value, .. } => self.sanitize_identifier(value),
+            CheckedExpr::Ident { value, .. } => match value.as_str() {
+                "Kind" | "String" | "Int" | "Bool" | "Char" => format!("Mihama{}", value),
+                _ => self.sanitize_identifier(value),
+            },
             CheckedExpr::Literal { value, .. } => self.generate_literal(value),
             CheckedExpr::Function { params, body, .. } => {
                 self.generate_function_expression(params, body)
@@ -481,7 +512,7 @@ impl CodeGenerator for JavaScriptGenerator {
                     .collect();
                 format!("[{}]", element_strs.join(", "))
             }
-            _ => unimplemented!(),
+            Literal::Unit => "undefined".to_string(),
         }
     }
 
@@ -489,9 +520,19 @@ impl CodeGenerator for JavaScriptGenerator {
         let mut conditions = Vec::new();
 
         for case in cases {
-            let condition = self.generate_pattern_guard(expr, &case.pattern, &case.guard);
             let body = self.generate_expression(&case.body);
-            conditions.push(format!("{} ? {}", condition, body));
+            let condition = self.generate_pattern_guard(expr, &case.pattern, &case.guard);
+            let split: Vec<&str> = condition.split("__BINDINGS__").into_iter().collect();
+            conditions.push(if split.len() == 1 {
+                format!("{} ? {}", condition, body)
+            } else {
+                let condition = split[0];
+                let bindings = split[1];
+                format!(
+                    "{} ? (() => {{ {}; return {}; }})()",
+                    condition, bindings, body
+                )
+            })
         }
 
         conditions.push(
@@ -504,7 +545,7 @@ impl CodeGenerator for JavaScriptGenerator {
     fn runtime_support(&self) -> String {
         r#"class MihamaError extends Error { }
 
-const mihamaCurry = (f) => {
+  const mihamaCurry = (f) => {
   const curried = (expectedLength, args) => ((...rest) => {
     if (rest.length === 0 || expectedLength === 0) {
       throw new MihamaError(`Arguments cannot be empty for function ${f.name}`);
@@ -535,17 +576,20 @@ const concat = (a, b) => `${a}${b}`
 "#.to_string()
     }
 
-    fn curry_function(&self, params_count: usize, body: &str) -> String {
-        if params_count <= 1 {
-            format!("(arg0) => {}", body)
-        } else {
-            let params: Vec<String> = (0..params_count).map(|i| format!("arg{}", i)).collect();
-            format!("mihamaCurry(({}) => {})", params.join(", "), body)
-        }
+    fn curry_function(&self, params: &[String], body: &str) -> String {
+        // let params: Vec<String> = (0..params_count).map(|i| format!("arg{}", i)).collect();
+        format!("mihamaCurry(({}) => {})", params.join(", "), body)
     }
 
-    fn create_type_constructor(&self, name: &str) -> String {
-        format!("createMihamaType(\"{}\")", name)
+    fn create_type_constructor(&self, name: &str, params: &[String]) -> String {
+        if params.is_empty() {
+            format!("createMihamaType(\"{}\")", name)
+        } else {
+            self.curry_function(
+                params,
+                &format!("createMihamaType(\"{}<{}>\")", name, params.join(",")),
+            )
+        }
     }
 
     fn create_value_constructor(&self, tag: &str, value: Option<&str>) -> String {

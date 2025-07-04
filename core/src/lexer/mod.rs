@@ -316,18 +316,18 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn handle_escape_token(&mut self, ch: char) -> Option<char> {
-        Some(match ch {
-            'n' => '\n',
-            't' => '\t',
-            'r' => '\r',
-            '0' => '\0',
-            '"' => '\"',
-            '\\' => '\\',
-            '\'' => '\'',
-            _ => return None,
-        })
-    }
+    // fn handle_escape_token(&mut self, ch: char) -> Option<char> {
+    //     Some(match ch {
+    //         'n' => '\n',
+    //         't' => '\t',
+    //         'r' => '\r',
+    //         '0' => '\0',
+    //         '"' => '\"',
+    //         '\\' => '\\',
+    //         '\'' => '\'',
+    //         _ => return None,
+    //     })
+    // }
 
     fn scan_origin_identifier(&mut self) -> Option<Token> {
         let mut str = String::new();
@@ -349,13 +349,13 @@ impl<'a> Lexer<'a> {
             self.read_char();
             match self.ch {
                 '"' => return Some(Token::String(str)),
-                '\\' => {
-                    self.read_char();
-                    match self.handle_escape_token(self.ch) {
-                        Some(ch) => str.push(ch),
-                        None => return None,
-                    }
-                }
+                // '\\' => {
+                //     self.read_char();
+                //     match self.handle_escape_token(self.ch) {
+                //         Some(ch) => str.push(ch),
+                //         None => return None,
+                //     }
+                // }
                 '\0' => return None,
                 ch => str.push(ch),
             }
@@ -364,16 +364,7 @@ impl<'a> Lexer<'a> {
 
     fn scan_char(&mut self) -> Option<Token> {
         self.read_char();
-        let ch = match self.ch {
-            '\\' => {
-                self.read_char();
-                match self.handle_escape_token(self.ch) {
-                    Some(ch) => ch,
-                    None => return None,
-                }
-            }
-            ch => ch,
-        };
+        let ch = self.ch;
         self.read_char();
         if self.ch == '\'' {
             Some(Token::Char(ch))

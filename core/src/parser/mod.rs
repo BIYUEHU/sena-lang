@@ -718,7 +718,10 @@ impl Parser {
         if statements.is_empty() || !matches!(statements.last(), Some(Stmt::Expr(_))) {
             return Err(self.error_invalid_syntax("block must end with an expression"));
         }
-        Ok(Expr::Block(statements))
+        match statements.as_slice() {
+            [Stmt::Expr(expr)] => Ok(expr.clone()),
+            _ => Ok(Expr::Block(statements)),
+        }
     }
 }
 
