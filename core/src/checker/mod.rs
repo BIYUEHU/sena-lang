@@ -2,7 +2,7 @@ use crate::checker::object::TypeObject;
 use crate::env::CheckerEnv;
 use crate::lexer::token::Token;
 use crate::parser::ast::{Expr, Kind, Literal, Pattern, Stmt, TypeExpr, TypeVariantFields};
-use crate::utils::{vec_to_kind, vec_to_type};
+use crate::utils::{num_to_kind, vec_to_kind, vec_to_type};
 use ast::{
     Checked, CheckedCase, CheckedExpr, CheckedStmt, CheckedTypeVariant, CheckedTypeVariantFields,
 };
@@ -208,6 +208,10 @@ impl Checker {
                         name,
                         params: arg_tys,
                     }),
+                    // TypeObject::Function(a, b) if arg_tys.len() == 1 => {
+                    //     self.add_constraint(*a, arg_tys[0])?;
+                    //     Ok(*b)
+                    // }
                     other => Err(TypeError::InvalidOperation {
                         operation: "type application".into(),
                         typ: format!("{}", other),
@@ -510,21 +514,25 @@ impl Checker {
             Stmt::Type {
                 name,
                 params,
-                kind_annotation,
+                kind_annotation: _,
                 variants,
             } => {
                 if self.env.borrow().has_bind(name) {
                     return Err(TypeError::RedefinedVariable(name.clone()));
                 }
+                // TODO: 解析 kind 注解
                 // 1) 解析 kind 注解（如果有）
-                let kind_ann = match kind_annotation {
-                    Some(k) => self.resolve_type_expr(Some(k))?,
-                    None => TypeObject::Kind(Kind::Star),
-                };
+                // println!("{:?}", kind_annotation);
+                // let kind_ann = match kind_annotation {
+                //     Some(k) => self.resolve_type_expr(Some(k))?,
+                //     None => TypeObject::Kind(Kind::Star),
+                // };
                 // 2) 把 type name 先插到环境，Kind 级别，避免递归
+                let kind = num_to_kind(params.len());
+                let kind_ann = TypeObject::Kind(kind.clone());
                 self.env.borrow_mut().insert_bind(
                     name.clone(),
-                    TypeObject::Kind(match kind_ann.clone() {
+                    /*                     TypeObject::Kind(match kind_ann.clone() {
                         TypeObject::Kind(k) => k,
                         _ => {
                             return Err(TypeError::KindMismatch {
@@ -532,7 +540,8 @@ impl Checker {
                                 found: format!("{}", kind_ann),
                             })
                         }
-                    }),
+                    }), */
+                    TypeObject::Kind(kind),
                 )?;
 
                 // 3) 解析每个构造子的类型

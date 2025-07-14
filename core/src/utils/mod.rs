@@ -57,6 +57,13 @@ pub fn vec_to_kind(vec_kind: Vec<Kind>) -> Kind {
     }
 }
 
+pub fn num_to_kind(num: usize) -> Kind {
+    match num {
+        0 => Kind::Star,
+        _ => Kind::Arrow(Box::new(Kind::Star), Box::new(num_to_kind(num - 1))),
+    }
+}
+
 pub fn is_op_char(ch: char) -> bool {
     matches!(
         ch,

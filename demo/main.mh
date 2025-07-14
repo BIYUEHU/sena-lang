@@ -1,8 +1,8 @@
 let foo = 1
 let foo1 = "Hello, FP!"
 let foo2: Char = 'X'
-type Bool2 = True | False
-let foo3: Bool2 = False
+// type Bool2 = True | False
+// let foo3: Bool2 = False
 let foo4: Float = 3.1415926
 
 type List: Kind -> Kind = <T> Cons(T, List(T)) | Nil
