@@ -1,6 +1,6 @@
 type Nat = Z | S(Nat)
 
-let to_number = (x) => match x then    | S(n) => 1 + to_number(n)    | Z => 0
+let to_number: Nat -> Int = (x) => match x then    | S(n) => 1 + to_number(n)    | Z => 0
 
 
 let bar = S(S(S(Z)))

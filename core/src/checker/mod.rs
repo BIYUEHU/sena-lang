@@ -541,7 +541,11 @@ impl Checker {
                             })
                         }
                     }), */
-                    TypeObject::Kind(kind),
+                    TypeObject::ADTDef {
+                        name: name.clone(),
+                        params: params.clone(),
+                        constructors: vec![],
+                    },
                 )?;
 
                 // 3) 解析每个构造子的类型
@@ -552,7 +556,7 @@ impl Checker {
                             // Unit 构造子对应一个零元构造
                             let cons_type = TypeObject::ADTInst {
                                 name: name.clone(),
-                                params: params.iter().map(|_| TypeObject::Any).collect(),
+                                params: vec![],
                             };
                             self.env
                                 .borrow_mut()
@@ -563,7 +567,6 @@ impl Checker {
                             });
                         }
                         TypeVariantFields::Tuple(fields) => {
-                            let saved_env = self.env.borrow().clone();
                             {
                                 let mut e = self.env.borrow_mut();
                                 for p in params.iter() {
@@ -577,7 +580,10 @@ impl Checker {
                             }
                             let retty = TypeObject::ADTInst {
                                 name: name.clone(),
-                                params: params.iter().map(|_| TypeObject::Any).collect(),
+                                params: params
+                                    .iter()
+                                    .map(|_| TypeObject::Kind(Kind::Star))
+                                    .collect(),
                             };
                             let func_ty =
                                 vec_to_type([field_tys.clone(), vec![retty.clone()]].concat());
@@ -588,7 +594,6 @@ impl Checker {
                                 name: variant.name.clone(),
                                 fields: CheckedTypeVariantFields::Tuple(field_tys),
                             });
-                            *self.env.borrow_mut() = saved_env;
                         }
                         _ => unimplemented!("record variant"),
                     }
@@ -711,6 +716,40 @@ impl Checker {
                             self.add_constraint((*param_ty).clone(), arg_c.get_type())?;
                             current_ty = *ret_ty;
                             checked_args.push(arg_c);
+                        }
+                        TypeObject::ADTDef {
+                            name,
+                            params: type_params,
+                            constructors,
+                        } => {
+                            // 类型构造器调用，需要进行类型级别的应用
+                            if checked_args.len() >= type_params.len() {
+                                return Err(TypeError::ArityMismatch {
+                                    expected: type_params.len(),
+                                    found: checked_args.len() + 1,
+                                    context: format!("calling constructor `{}`", name),
+                                });
+                            }
+
+                            // 对于类型构造器，参数应该是类型，这里需要检查 arg 是否是有效的类型
+                            // 这可能需要额外的类型级别检查
+                            checked_args.push(arg_c);
+
+                            // 如果还有更多参数要处理，继续作为部分应用
+                            if checked_args.len() < type_params.len() {
+                                // 返回一个部分应用的类型构造器
+                                current_ty = TypeObject::ADTDef {
+                                    name: name.clone(),
+                                    params: type_params[checked_args.len()..].to_vec(),
+                                    constructors: constructors.clone(),
+                                };
+                            } else {
+                                // 所有参数都提供了，返回具体的类型
+                                current_ty = TypeObject::ADTInst {
+                                    name: name.clone(),
+                                    params: checked_args.iter().map(|c| c.get_type()).collect(),
+                                };
+                            }
                         }
                         other => {
                             return Err(TypeError::NotCallable {

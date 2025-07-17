@@ -9,7 +9,7 @@ type List: Kind -> Kind = <T> Cons(T, List(T)) | Nil
 let String1 = List(Char)
 // let String2 = [Char]
 
-let fruits: List = Cons("Apple", Cons("Banana", Cons("Pear", Nil)))
+let fruits: List(String) = Cons("Apple", Cons("Banana", Cons("Pear", Nil)))
 // let fruits2: [String] = ["Apple", "Banana", "Pear"]
 
 let add: Int -> Int -> Int = (x, y) => x + y
