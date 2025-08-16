@@ -133,7 +133,13 @@ pub fn new_checker_env() -> Rc<RefCell<CheckerEnv>> {
     .unwrap();
     env.insert_bind(
         "concat".to_string(),
-        TypeObject::Function(Box::new(TypeObject::Any), Box::new(TypeObject::String)),
+        TypeObject::Function(
+            Box::new(TypeObject::String),
+            Box::new(TypeObject::Function(
+                Box::new(TypeObject::String),
+                Box::new(TypeObject::String),
+            )),
+        ),
     )
     .unwrap();
     env_origin
@@ -211,8 +217,11 @@ pub fn new_evaluator_env() -> Rc<RefCell<EvaluatorEnv>> {
                 type_annotation: TypeObject::String,
             },
             type_annotation: TypeObject::Function(
-                Box::new(TypeObject::Any),
                 Box::new(TypeObject::String),
+                Box::new(TypeObject::Function(
+                    Box::new(TypeObject::String),
+                    Box::new(TypeObject::String),
+                )),
             ),
             env: Rc::clone(&env_origin),
         },

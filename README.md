@@ -43,6 +43,7 @@
 ### 长期目标
 
 - 语法层面上的 Record 与 Tuple 类型
+- 副作用 IO
 - 广义代数数据类型（Generalized ADT）
 - RankNTypes 与完善的 System F
 - 列表推导式
@@ -143,6 +144,9 @@ Haskell 风格运算符：
 ```ts
 let g: Int -> Int = (x) => x * 2
 let h: Int -> Int = (x) => x ^ 3
+
+// ($) : (a -> b) -> a -> b
+// (.) : (b -> c) -> (a -> b) -> a -> c
 
 g $ 33 + 44 // Equivalent to g(33 + 44)
 (h . g)(3) // Equivalent to g(h(3))
@@ -342,7 +346,7 @@ let #++# = (list1, list2) =>
       Cons(a, b ++ list2)
     | Nil => list2
 
-let #~# = (str1, str2) => concat(str1, str2)
+let #+:# = (str1, str2) => concat(str1, str2)
 
 [2] ++ [3] // [2, 3]
 "Hello, " ~ "World!" // "Hello, World!"
