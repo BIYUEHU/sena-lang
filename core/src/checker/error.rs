@@ -1,7 +1,6 @@
-use crate::env::error::EnvError;
-use std::fmt;
-
 use super::object::TypeObject;
+use crate::env::error::EnvError;
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeError {
@@ -46,8 +45,8 @@ impl From<EnvError> for TypeError {
     }
 }
 
-impl fmt::Display for TypeError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl Display for TypeError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         use TypeError::*;
         match self {
             UndefinedVariable(n) => write!(f, "Undefined variable '{}'", n),

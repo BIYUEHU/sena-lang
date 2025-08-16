@@ -1,6 +1,5 @@
-use std::fmt::{self, Display, Formatter};
-
 use super::token::TokenData;
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug)]
 pub enum LexerError {

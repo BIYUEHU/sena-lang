@@ -13,6 +13,8 @@ pub enum EvalError {
     NotCallable,
     NotAType(String),
     TypeError(TypeError),
+    ModuleNotFound(String),
+    ModuleError(String),
 }
 
 impl From<EnvError> for EvalError {
@@ -43,6 +45,8 @@ impl Display for EvalError {
             EvalError::PatternMatchFailure => write!(f, "Pattern match failed"),
             EvalError::NotAType(name) => write!(f, "Not a type: {}", name),
             EvalError::TypeError(error) => write!(f, "Type error: {}", error),
+            EvalError::ModuleNotFound(name) => write!(f, "Module not found: {}", name),
+            EvalError::ModuleError(message) => write!(f, "Module error: {}", message),
         }
     }
 }

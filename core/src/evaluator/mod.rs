@@ -1,13 +1,15 @@
 use crate::checker::ast::{CheckedExpr, CheckedStmt, CheckedTypeVariantFields, Program};
 use crate::checker::object::TypeObject;
-use crate::env::{Env, EvaluatorEnv};
+use crate::env::{new_evaluator_env, Env, EvaluatorEnv};
 use crate::lexer::token::Token;
 use crate::parser::ast::{Kind, Literal, Pattern, UnsafeProgram};
+use crate::utils::constant::MIHAMA_LANGUAGE_EXTENSION;
 use crate::utils::{is_uppercase_first_letter, to_checked_expr, to_checked_stmt};
 use error::EvalError;
 use object::{Object, PrettyPrint};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs;
 use std::rc::Rc;
 use std::time::UNIX_EPOCH;
 
@@ -73,6 +75,10 @@ impl Evaluator {
 
     pub fn set_custom_func(&mut self, name: String, func: CustomFunc) {
         self.custom_funcs.insert(name, func);
+    }
+
+    pub fn export_all(&self) -> HashMap<String, Object> {
+        self.env.borrow().get_all_own_binds()
     }
 
     fn eval_internal_func(
@@ -260,8 +266,64 @@ impl Evaluator {
                 Ok(Object::Unit)
             }
             CheckedStmt::Expr(expr) => self.eval_expr(expr),
+            CheckedStmt::ImportAll { source, .. } => self.eval_import_all(source),
             _ => Ok(Object::Unit),
         }
+    }
+
+    fn eval_import_all(&self, source: &str) -> Result<Object, EvalError> {
+        let suffix = format!(".{}", MIHAMA_LANGUAGE_EXTENSION);
+        let contents = fs::read_to_string(if source.ends_with(suffix.as_str()) {
+            source.to_string()
+        } else {
+            format!("{}{}", source, suffix)
+        })
+        .map_err(|_| EvalError::ModuleNotFound(source.to_string()))?;
+
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let mut error = None;
+        let token_data = Lexer::new(contents.as_str())
+            .filter_map(|result| match result {
+                Ok(token_data) => Some(token_data),
+                Err(err) => {
+                    if error.is_none() {
+                        error = Some(EvalError::ModuleError(format!("Lexer error: {}", err)));
+                    }
+                    None
+                }
+            })
+            .collect();
+        if let Some(err) = error {
+            return Err(err);
+        };
+
+        let program = Parser::new(token_data, true)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|result| match result {
+                Ok(stmt) => Some(stmt),
+                Err(err) => {
+                    if error.is_none() {
+                        error = Some(EvalError::ModuleError(format!("Parser error: {}", err)));
+                    }
+                    None
+                }
+            })
+            .collect::<UnsafeProgram>();
+
+        if let Some(err) = error {
+            return Err(err);
+        }
+
+        let env = new_evaluator_env();
+        let mut module = Evaluator::new(Env::extend(Rc::clone(&env)));
+        module.eval_unsafe(&program)?;
+        for (name, value) in module.export_all() {
+            self.env.borrow_mut().insert_bind(name, value)?;
+        }
+        Ok(Object::Unit)
     }
 
     fn eval_expr(&self, expr: &CheckedExpr) -> Result<Object, EvalError> {

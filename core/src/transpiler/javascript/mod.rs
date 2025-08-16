@@ -218,7 +218,6 @@ impl JavaScriptGenerator {
                 .map(|(i, stmt)| {
                     let stmt_str = gen.generate_statement(stmt);
                     if i == stmts.len() - 1 {
-                        // 最后一个语句作为返回值
                         match stmt {
                             CheckedStmt::Expr(_) => format!("{}return {}", gen.indent(), stmt_str),
                             _ => format!(

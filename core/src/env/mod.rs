@@ -93,6 +93,10 @@ impl<T: Clone> Env<T> {
             false
         }
     }
+
+    pub fn get_all_own_binds(&self) -> HashMap<String, T> {
+        self.binds.clone()
+    }
 }
 
 pub fn new_checker_env() -> Rc<RefCell<CheckerEnv>> {
@@ -117,6 +121,19 @@ pub fn new_checker_env() -> Rc<RefCell<CheckerEnv>> {
             Box::new(TypeObject::Unit.into()),
             Box::new(TypeObject::Float.into()),
         ),
+    )
+    .unwrap();
+    env.insert_bind(
+        "get_bind".to_string(),
+        TypeObject::Function(
+            Box::new(TypeObject::String.into()),
+            Box::new(TypeObject::Any.into()),
+        ),
+    )
+    .unwrap();
+    env.insert_bind(
+        "concat".to_string(),
+        TypeObject::Function(Box::new(TypeObject::Any), Box::new(TypeObject::String)),
     )
     .unwrap();
     env_origin

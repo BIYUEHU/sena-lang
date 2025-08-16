@@ -13,66 +13,44 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Enable verbose output
     #[arg(short, long)]
     verbose: bool,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start interactive REPL
     Repl {
-        /// Initial mode (lexer/parser/checker/evaluator/unsafe)
         #[arg(short, long, default_value = "evaluator")]
         mode: String,
     },
-    /// Run a Mihama source file
     Run {
-        /// Source file path
         file: PathBuf,
-        /// Running mode
         #[arg(short, long, default_value = "evaluator")]
         mode: String,
-        /// Show type information
         #[arg(short, long)]
         types: bool,
     },
-    /// Transpile source file to target language
     Trans {
-        /// Source file path
         input: PathBuf,
-        /// Output file path
         output: PathBuf,
-        /// Target language (javascript/python/c)
         #[arg(short, long, default_value = "javascript")]
         target: String,
     },
-    /// Check source file for type errors
     Check {
-        /// Source file path
         file: PathBuf,
-        /// Show detailed type information
         #[arg(short, long)]
         verbose: bool,
     },
-    /// Parse and display AST
     Parse {
-        /// Source file path
         file: PathBuf,
-        /// Output format (debug/json/pretty)
         #[arg(short, long, default_value = "debug")]
         format: String,
     },
-    /// Tokenize and display tokens
     Lex {
-        /// Source file path
         file: PathBuf,
     },
-    /// Format source code
     Format {
-        /// Source file path
         file: PathBuf,
-        /// Write result back to file
         #[arg(short, long)]
         write: bool,
     },
@@ -110,7 +88,6 @@ fn main() {
             }
         }
     } else {
-        // 默认进入REPL
         run_repl(RunningMode::Evaluator, cli.verbose);
     }
 }

@@ -7,6 +7,7 @@ use mihama_core::{
         error::ParseError,
         Parser,
     },
+    preprocessor::Preprocessor,
     transpiler::{javascript::JavaScriptTranspiler, Transpiler},
     utils::to_checked_stmt,
 };
@@ -53,8 +54,9 @@ impl Display for RunningMode {
 }
 
 pub fn parse_code(code: &str) -> Result<Vec<Result<Stmt, ParseError>>, String> {
+    let code = Preprocessor::process(code).map_err(|err| err.to_string())?;
     let mut error = None;
-    let token_data = Lexer::new(code)
+    let token_data = Lexer::new(code.as_str())
         .filter_map(|result| match result {
             Ok(token_data) => Some(token_data),
             Err(err) => {

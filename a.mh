@@ -1,0 +1,7 @@
+let a = 1
+
+let #++# = concat
+
+print(222)
+
+let fff = (x: String) => concat("hello, ", concat(x, " from a module!"))

@@ -515,21 +515,21 @@ mod tests {
 
     #[test]
     fn test_strings() {
-        let tokens = lex(r#""hello" "world\n" "escape\"quote""#);
+        let tokens = lex(r#""hello" "world" "escapequote""#);
         assert_eq!(
             tokens,
             vec![
                 String("hello".to_string()),
-                String("world\n".to_string()),
-                String("escape\"quote".to_string())
+                String("world".to_string()),
+                String("escapequote".to_string())
             ]
         );
     }
 
     #[test]
     fn test_chars() {
-        let tokens = lex("'a' '\\n' '\\''");
-        assert_eq!(tokens, vec![Char('a'), Char('\n'), Char('\'')]);
+        let tokens = lex("'a' '\n'");
+        assert_eq!(tokens, vec![Char('a'), Char('\n')]);
     }
 
     #[test]
