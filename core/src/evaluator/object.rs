@@ -272,7 +272,7 @@ impl TypeInfo for Object {
             //     "{} -> {}",
             //     fields
             //         .iter()
-            //         .map(|_| "Kind")
+            //         .map(|_| "Type")
             //         .collect::<Vec<_>>()
             //         .join(" -> "),
             //     format_type_name(type_name.clone(), type_params.clone()),
@@ -281,7 +281,7 @@ impl TypeInfo for Object {
             //     "{} -> Kind",
             //     type_params
             //         .iter()
-            //         .map(|_| "Kind")
+            //         .map(|_| "Type")
             //         .collect::<Vec<_>>()
             //         .join(" -> "),
             // ),

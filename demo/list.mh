@@ -1,5 +1,5 @@
-type Maybe = <A> Just(A) | Nothing
-type List = <A> Cons(A, List(A)) | Nil
+type Maybe = [A] Just(A) | Nothing
+type List = [A] Cons(A, List(A)) | Nil
 
 let intList = List(Int)
 
@@ -40,8 +40,5 @@ let show = (x) =>
 
 let arr = 1 : 2 : 3 : 4 : Nil
 
-show . print $ arr
-
-map (print, get(arr, 2) : get(arr, 6) : Nil)
-
-{()}
+print(show $ arr)
+print(map (print, get(arr, 2) : get(arr, 6) : Nil))

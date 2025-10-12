@@ -11,7 +11,7 @@ pub enum Kind {
 impl Display for Kind {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Kind::Star => write!(f, "Kind"),
+            Kind::Star => write!(f, "Type"),
             Kind::Arrow(t1, t2) => {
                 if matches!(**t2, Kind::Arrow(..)) {
                     write!(f, "({}) -> {}", t1, t2)

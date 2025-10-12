@@ -525,7 +525,7 @@ impl Checker {
                         TypeObject::Kind(k) => k,
                         _ => {
                             return Err(TypeError::KindMismatch {
-                                expected: "kind".into(),
+                                expected: "Type".into(),
                                 found: format!("{}", kind_ann),
                             })
                         }
@@ -600,7 +600,7 @@ impl Checker {
                         ),
                         _ => {
                             return Err(TypeError::KindMismatch {
-                                expected: "kind".into(),
+                                expected: "Type".into(),
                                 found: format!("{}", kind_ann),
                             })
                         }

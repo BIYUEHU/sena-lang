@@ -9,6 +9,4 @@ let fibonaci2: Int -> Int -> Int -> Int = (n, first, second) =>
 
 let start = get_timestamp()
 print(fibonaci(5))
-// print(fibonaci(42, 0, 1))
 print(get_timestamp() - start)
-

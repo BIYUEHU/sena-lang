@@ -665,8 +665,8 @@ mod tests {
     #[test]
     fn maybe_and_list_adt_usage() {
         let code = r#"
-            type Maybe = <A> Just(A) | Nothing
-            type List  = <A> Cons(A, List(A)) | Nil
+            type Maybe = [A] Just(A) | Nothing
+            type List  = [A] Cons(A, List(A)) | Nil
 
             let xs = Nil
             let ys = Cons(1, Cons(2, xs))

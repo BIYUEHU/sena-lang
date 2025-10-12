@@ -7,6 +7,9 @@
   "publisher": "Arimura Sena",
   "repository": "https://github.com/biyuehu/misakura",
   "version": "0.1.0",
+  "scripts": {
+    "build": "pnpx vsce package"
+  },
   "engines": {
     "vscode": "^1.0.0"
   },

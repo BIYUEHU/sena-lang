@@ -1,12 +1,12 @@
 /* Prelude.mh */
 
-type List: Kind -> Kind = <A> Cons(A, List(A)) | Nil
-type Pair: Kind -> Kind -> Kind = <A, B> MkPair(A, B)
+type List: Type -> Type = [A] Cons(A, List(A)) | Nil
+type Pair: Type -> Type -> Type = [A, B] MkPair(A, B)
 
-type Maybe: Kind -> Kind = <A> Just(A) | Nothing
+type Maybe: Type -> Type = [A] Just(A) | Nothing
 let Option = Maybe
 
-type Either: Kind -> Kind -> Kind = <A, B> Left(A) | Right(B)
+type Either: Type -> Type -> Type = [A, B] Left(A) | Right(B)
 let Result = Either
 
 let #$# = (f, x) => f(x)

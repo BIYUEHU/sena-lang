@@ -11,7 +11,6 @@ pub trait CodeGenerator {
     fn generate_literal(&mut self, literal: &Literal) -> String;
     fn generate_pattern_match(&mut self, expr: &CheckedExpr, cases: &[CheckedCase]) -> String;
 
-    fn runtime_support(&self) -> String;
     fn curry_function(&self, params: &[String], body: &str) -> String;
     fn create_type_constructor(&self, name: &str, params: &[String]) -> String;
     fn create_value_constructor(&self, tag: &str, value: Option<&str>) -> String;

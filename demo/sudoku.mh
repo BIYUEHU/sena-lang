@@ -1,6 +1,6 @@
-type List = <A> Cons(A, List(A)) | Nil
-type Pair = <A, B> MkPair(A, B)
-type Maybe = <A> Just(A) | Nothing
+type List = [A] Cons(A, List(A)) | Nil
+type Pair = [A, B] MkPair(A, B)
+type Maybe = [A] Just(A) | Nothing
 
 let #:# = (el, list) => Cons(el, list)
 let #$# = (f, x) => f(x)
@@ -229,9 +229,9 @@ match generatePuzzle(30) then
     print(showGrid(puzzle))
     match solve(puzzle) then
       | Just(solved) => {
-        print("Solution:")
-        print(showGrid(solved))
-      }
+          print("Solution:")
+          print(showGrid(solved))
+        }
       | Nothing => print("No solution found.")
   }
   | Nothing => print("Failed to generate puzzle.")

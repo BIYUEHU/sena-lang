@@ -8,6 +8,9 @@
       "include": "#comments"
     },
     {
+      "include": "#directives"
+    },
+    {
       "include": "#strings"
     },
     {
@@ -17,7 +20,7 @@
       "include": "#keywords"
     },
     {
-      "include": "#operators"
+      "include": "#preprocessor"
     },
     {
       "include": "#generics"
@@ -29,6 +32,9 @@
       "include": "#type_declaration"
     },
     {
+      "include": "#struct_class"
+    },
+    {
       "include": "#let_declaration"
     },
     {
@@ -36,6 +42,15 @@
     },
     {
       "include": "#function_call"
+    },
+    {
+      "include": "#pattern_matching"
+    },
+    {
+      "include": "#module_access"
+    },
+    {
+      "include": "#infix_operator"
     },
     {
       "include": "#identifiers"
@@ -52,6 +67,106 @@
           "name": "comment.block.ma",
           "begin": "/\\*",
           "end": "\\*/"
+        },
+        {
+          "name": "comment.doc.ma",
+          "begin": "///",
+          "end": "$"
+        }
+      ]
+    },
+    "directives": {
+      "patterns": [
+        {
+          "name": "meta.directive.import.ma",
+          "match": "@import\\s+\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\"",
+          "captures": {
+            "0": {
+              "name": "keyword.directive.import.ma"
+            }
+          }
+        },
+        {
+          "name": "meta.directive.import_noquote.ma",
+          "match": "@import\\s+[^\\s]+",
+          "captures": {
+            "0": {
+              "name": "keyword.directive.import.ma"
+            }
+          }
+        }
+      ]
+    },
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "meta.preprocessor.define.ma",
+          "match": "@define\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+([^\\n]+)",
+          "captures": {
+            "1": {
+              "name": "variable.other.preprocessor.name.ma"
+            },
+            "2": {
+              "name": "constant.numeric.preprocessor.value.ma"
+            }
+          }
+        },
+        {
+          "name": "meta.preprocessor.macro.ma",
+          "begin": "@macro\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\(([^)]*)\\))?\\s*=>",
+          "beginCaptures": {
+            "1": {
+              "name": "entity.name.function.macro.ma"
+            },
+            "2": {
+              "name": "variable.parameter.macro.ma"
+            }
+          },
+          "end": "(?=$)",
+          "patterns": [
+            {
+              "include": "#lambda_expression"
+            },
+            {
+              "include": "#identifiers"
+            }
+          ]
+        },
+        {
+          "name": "meta.preprocessor.conditional.ma",
+          "begin": "(?x)@(?:(ifdef|ifndef))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.preprocessor.ma"
+            },
+            "2": {
+              "name": "variable.other.preprocessor.name.ma"
+            }
+          },
+          "end": "(?x)@endif",
+          "patterns": [
+            {
+              "include": "#directives"
+            },
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#let_declaration"
+            },
+            {
+              "include": "#type_declaration"
+            },
+            {
+              "include": "#struct_class"
+            },
+            {
+              "include": "#pattern_matching"
+            }
+          ]
         }
       ]
     },
@@ -97,7 +212,7 @@
       "patterns": [
         {
           "name": "keyword.control.ma",
-          "match": "\\b(import|from|as|type|export|abstract|let|match|if|then|else|in)\\b"
+          "match": "\\b(import|as|type|export|abstract|let|match|if|then|else|in|struct|class|trait|impl|priv|true|false|null)\\b"
         }
       ]
     },
@@ -109,7 +224,7 @@
         },
         {
           "name": "keyword.operator.math.ma",
-          "match": "\\+|-|\\*|\\/|%|\\^"
+          "match": "\\+\\+|\\+|-|\\*|\\/|%|\\^"
         },
         {
           "name": "keyword.operator.comparison.ma",
@@ -124,12 +239,40 @@
           "match": "="
         },
         {
+          "name": "keyword.operator.path.ma",
+          "match": "::"
+        },
+        {
+          "name": "punctuation.access.ma",
+          "match": "\\."
+        },
+        {
           "name": "punctuation.separator.colon.ma",
           "match": ":"
         },
         {
           "name": "punctuation.separator.pipe.ma",
           "match": "\\|"
+        },
+        {
+          "name": "punctuation.separator.comma.ma",
+          "match": ","
+        },
+        {
+          "name": "punctuation.brackets.ma",
+          "match": "[\\(\\)\\{\\}\\[\\]]"
+        }
+      ]
+    },
+    "infix_operator": {
+      "patterns": [
+        {
+          "name": "entity.name.infix.operator.ma",
+          "match": "#[^#]+#"
+        },
+        {
+          "name": "meta.infix.operation.call.ma",
+          "match": "#[^#]+#\\s*(?=\\()"
         }
       ]
     },
@@ -137,20 +280,28 @@
       "patterns": [
         {
           "name": "meta.generic.ma",
-          "begin": "<",
-          "end": ">",
+          "begin": "\\[",
+          "end": "\\]",
           "patterns": [
             {
-              "name": "entity.name.type.parameter.ma",
-              "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+              "name": "variable.parameter.generic.ma",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            },
+            {
+              "name": "keyword.operator.generic.bound.ma",
+              "match": ":"
+            },
+            {
+              "name": "keyword.control.impl.ma",
+              "match": "\\bimpl\\b"
             },
             {
               "name": "punctuation.separator.generic.ma",
               "match": ","
             },
             {
-              "name": "keyword.operator.generic.constraint.ma",
-              "match": ":"
+              "name": "storage.type.arrow.ma",
+              "match": "->"
             }
           ]
         }
@@ -160,49 +311,12 @@
       "patterns": [
         {
           "name": "meta.import.ma",
-          "begin": "\\bimport\\b",
-          "end": "(?=$)",
-          "patterns": [
-            {
-              "name": "keyword.control.import.ma",
-              "match": "\\bimport\\b"
-            },
-            {
-              "name": "punctuation.definition.import.brace.ma",
-              "match": "[{}]"
-            },
-            {
-              "name": "variable.parameter.import.ma",
-              "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
-            },
-            {
-              "name": "keyword.control.from.ma",
-              "match": "\\bfrom\\b"
-            },
-            {
-              "name": "string.quoted.double.ma",
-              "match": "\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\""
+          "match": "@import\\s+\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\"",
+          "captures": {
+            "0": {
+              "name": "keyword.control.import.ma"
             }
-          ]
-        },
-        {
-          "name": "meta.import-as.ma",
-          "begin": "\\bimport\\s+as\\b",
-          "end": "(?=$)",
-          "patterns": [
-            {
-              "name": "variable.other.module.ma",
-              "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
-            },
-            {
-              "name": "keyword.control.from.ma",
-              "match": "\\bfrom\\b"
-            },
-            {
-              "name": "string.quoted.double.ma",
-              "match": "\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\""
-            }
-          ]
+          }
         }
       ]
     },
@@ -210,28 +324,111 @@
       "patterns": [
         {
           "name": "meta.type.declaration.ma",
-          "begin": "(?x)\n              \\b(?:export\\s+abstract\\s+type|export\\s+type|type)\\s+\n              ([A-Z][a-zA-Z0-9_]*)\\b",
+          "begin": "(?x)\\btype\\s+([A-Z][A-Za-z0-9_]*)\\s*(?:(:\\s*[A-Za-z0-9_ \\->]+)\\s*)?(\\[.*?\\])?\\s*=\\s*",
           "beginCaptures": {
             "1": {
               "name": "entity.name.type.definition.ma"
+            },
+            "2": {
+              "name": "storage.type.annotation.ma"
+            },
+            "3": {
+              "name": "meta.generic.declaration.ma"
             }
           },
-          "end": "(?=$)",
+          "end": "(?=^\\s*(?:type|struct|class|let|trait|impl|$))",
           "patterns": [
             {
-              "name": "keyword.operator.assignment.ma",
-              "match": "="
-            },
-            {
-              "name": "meta.type.variants.ma",
-              "begin": "(?<=\\=)",
-              "end": "(?=$)",
+              "name": "meta.type.variants_block.ma",
+              "begin": "(?m)(?<=\\=)\\s*",
+              "end": "(?=^\\s*(?:type|struct|class|let|trait|impl|$))",
               "patterns": [
                 {
                   "name": "meta.type.variant.ma",
-                  "match": "(\\|\\s*)?\\b[A-Z][a-zA-Z0-9_]*\\b(?:\\s*\\((?:[^()]+|\\([^()]*\\))*\\))?"
+                  "match": "(?m)^[ \\t]*\\|?\\s*([A-Z][A-Za-z0-9_]*)\\s*(?:\\(([^)]*)\\))?\\s*(?:\\:\\s*([^\\n]+))?",
+                  "captures": {
+                    "1": {
+                      "name": "entity.name.type.variant.ma"
+                    },
+                    "2": {
+                      "name": "meta.type.variant.tuple.ma"
+                    },
+                    "3": {
+                      "name": "meta.type.variant.gadt_signature.ma"
+                    }
+                  }
+                },
+                {
+                  "include": "#generics"
+                },
+                {
+                  "include": "#operators"
+                },
+                {
+                  "include": "#numbers"
+                },
+                {
+                  "include": "#strings"
                 }
               ]
+            }
+          ]
+        }
+      ]
+    },
+    "struct_class": {
+      "patterns": [
+        {
+          "name": "meta.struct.or.class.ma",
+          "begin": "(?x)\\b(struct|class)\\s+([A-Z][A-Za-z0-9_]*)\\s*(?::\\s*[A-Za-z0-9_ \\->]+\\s*)?(\\[.*?\\])?\\s*(?:=\\s*|\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.declaration.ma"
+            },
+            "2": {
+              "name": "entity.name.type.definition.ma"
+            },
+            "3": {
+              "name": "meta.generic.declaration.ma"
+            }
+          },
+          "end": "(?=^\\s*(?:type|struct|class|let|trait|impl|$))",
+          "patterns": [
+            {
+              "name": "meta.struct.field.ma",
+              "match": "^[ \\t]*\\|?\\s*(priv\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*([^\\n,]+)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.privacy.ma"
+                },
+                "2": {
+                  "name": "variable.other.field.ma"
+                },
+                "3": {
+                  "name": "storage.type.field.ma"
+                }
+              }
+            },
+            {
+              "name": "meta.struct.const.ma",
+              "match": "^[ \\t]*\\|?\\s*([A-Z_][A-Z0-9_]*)\\s*=\\s*([^\\n]+)",
+              "captures": {
+                "1": {
+                  "name": "constant.other.property.ma"
+                },
+                "2": {
+                  "name": "constant.other.value.ma"
+                }
+              }
+            },
+            {
+              "include": "#generics"
+            },
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#numbers"
             }
           ]
         }
@@ -241,7 +438,7 @@
       "patterns": [
         {
           "name": "meta.let.declaration.ma",
-          "begin": "(?x)\n              \\blet\\s+\n              ([a-zA-Z_][a-zA-Z0-9_]*)\\b           # 捕获变量/函数名\n              (?:\\s*:\\s*(?:(<[^>]+>)\\s*)?            # 可选泛型\n              [^=]+)?                                  # 可选类型注解\n              \\s*=\\s*",
+          "begin": "(?x)\\blet\\s+([a-z][a-zA-Z0-9_\\-\\#]*)\\b(?:\\s*:\\s*(\\[.*?\\])?\\s*[^=]+)?\\s*=\\s*",
           "beginCaptures": {
             "1": {
               "name": "variable.other.definition.ma"
@@ -250,7 +447,7 @@
               "name": "meta.generic.declaration.ma"
             }
           },
-          "end": "(?=$)",
+          "end": "(?=^\\s*(?:type|struct|class|let|trait|impl|$))",
           "patterns": [
             {
               "include": "#lambda_expression"
@@ -259,7 +456,19 @@
               "include": "#function_call"
             },
             {
+              "include": "#module_access"
+            },
+            {
+              "include": "#infix_operator"
+            },
+            {
               "include": "#identifiers"
+            },
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#numbers"
             }
           ]
         }
@@ -269,7 +478,7 @@
       "patterns": [
         {
           "name": "meta.lambda.ma",
-          "begin": "(?x)\n              (\\([^()]*\\)|[a-zA-Z_][a-zA-Z0-9_]*)\\s*\n              (?:=>|->)\\s*",
+          "begin": "(?x)(\\([^()]*\\)|[a-zA-Z_][a-zA-Z0-9_]*)\\s*(?:=>|->)\\s*",
           "beginCaptures": {
             "1": {
               "name": "variable.parameter.ma"
@@ -278,7 +487,7 @@
               "name": "keyword.operator.lambda.ma"
             }
           },
-          "end": "(?=$)",
+          "end": "(?=\\n|$)",
           "patterns": [
             {
               "include": "#identifiers"
@@ -300,10 +509,69 @@
       "patterns": [
         {
           "name": "meta.function.call.ma",
-          "match": "(?x)\n            \\b(?!let\\b|if\\b|match\\b)([a-zA-Z_][a-zA-Z0-9_]*)\\b\\s*\n            (?:<\\s*[A-Z][a-zA-Z0-9_]*(?:\\s*,\\s*[A-Z][a-zA-Z0-9_]*)*\\s*>)?\\s*(?=\\()",
+          "match": "(?x)\\b(?!let\\b|if\\b|match\\b)([a-z][a-zA-Z0-9_]*)\\b\\s*(?:\\[.*?\\])?\\s*(?=\\()",
           "captures": {
             "1": {
               "name": "entity.name.function.call.ma"
+            }
+          }
+        },
+        {
+          "name": "meta.function.call.infix.ma",
+          "match": "#[^#]+#\\s*(?=\\()",
+          "captures": {
+            "0": {
+              "name": "entity.name.function.call.ma"
+            }
+          }
+        }
+      ]
+    },
+    "pattern_matching": {
+      "patterns": [
+        {
+          "name": "meta.match.expression.ma",
+          "begin": "\\bmatch\\b",
+          "end": "(?=^\\s*(?:type|struct|class|let|trait|impl|$))",
+          "patterns": [
+            {
+              "name": "keyword.control.match.ma",
+              "match": "\\bmatch\\b"
+            },
+            {
+              "name": "keyword.control.then.ma",
+              "match": "\\bthen\\b"
+            },
+            {
+              "name": "meta.match.case.ma",
+              "match": "(?m)^[ \\t]*\\|\\s*([^=|:]+?)\\s*[:=]\\s*",
+              "captures": {
+                "1": {
+                  "name": "variable.parameter.pattern.ma"
+                }
+              }
+            },
+            {
+              "include": "#identifiers"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#strings"
+            }
+          ]
+        }
+      ]
+    },
+    "module_access": {
+      "patterns": [
+        {
+          "name": "meta.module.access.ma",
+          "match": "(?:[A-Za-z_][A-Za-z0-9_]*::)+[A-Za-z_][A-Za-z0-9_]*|\\b[A-Za-z_][A-Za-z0-9_]*\\s*\\.\\s*\\d+\\b",
+          "captures": {
+            "0": {
+              "name": "variable.other.module.access.ma"
             }
           }
         }
@@ -312,8 +580,12 @@
     "identifiers": {
       "patterns": [
         {
+          "name": "entity.name.type.ma",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        },
+        {
           "name": "variable.other.ma",
-          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+          "match": "\\b[a-z_][a-zA-Z0-9_\\-]*\\b"
         }
       ]
     }

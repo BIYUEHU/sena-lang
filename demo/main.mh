@@ -5,7 +5,7 @@ let foo2: Char = 'X'
 // let foo3: Bool2 = False
 let foo4: Float = 3.1415926
 
-type List: Kind -> Kind = <T> Cons(T, List(T)) | Nil
+type List: Type -> Type = [T] Cons(T, List(T)) | Nil
 let String1 = List(Char)
 // let String2 = [Char]
 

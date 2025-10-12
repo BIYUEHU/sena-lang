@@ -1,23 +1,23 @@
 <!-- markdownlint-disable-next-line -->
 <div align="center">
 
-# Mihama Language
+# Sena Language
 
 <!-- markdownlint-disable-next-line -->
 <img src="./extension/icons/icon.png" width="230" />
 
 ![LICENSE](https://img.shields.io/badge/license-BCU-c06ac9) [![wakatime](https://wakatime.com/badge/user/018dc603-712a-4205-a226-d4c9ccd0d02b/project/5a7b91ab-6432-4729-8b56-bc6b70c9b93e.svg)](https://wakatime.com/badge/user/018dc603-712a-4205-a226-d4c9ccd0d02b/project/5a7b91ab-6432-4729-8b56-bc6b70c9b93e)
-[![Build](https://github.com/BIYUEHU/mihama/actions/workflows/build.yml/badge.svg)](https://github.com/BIYUEHU/mihama/actions/workflows/build.yml)
+[![Build](https://github.com/BIYUEHU/sena-lang/actions/workflows/build.yml/badge.svg)](https://github.com/BIYUEHU/sena-lang/actions/workflows/build.yml)
 
 <!-- markdownlint-disable-next-line -->
-### [**Playground 👉**](https://mihama.hotaru.icu)
+### [**Playground 👉**](https://l.himeno-sena.com)
 
 </div>
 
 > Developing...
 
-- **Mihama** 是一门以 λ-cube 为设计目标、支持一等类型与依赖类型、多后端、多范式、现代化的函数式编程语言。
-- **Mihama** is a functional programming language with a design goal of λ-cube, supporting first-class types and dependent types, multiple backends, multiple paradigms, and modern features.
+- **Sena** 是一门以 λ-cube 为设计目标、支持一等类型与依赖类型、多后端、多范式、现代化的函数式编程语言。
+- **Sena** is a functional programming language with a design goal of λ-cube, supporting first-class types and dependent types, multiple backends, multiple paradigms, and modern features.
 
 ## Advantages
 
@@ -64,14 +64,14 @@
 
 ### 开始
 
-可在 REPL 中交互，也可运行以 `.mh` 为后缀名的源文件，或者在 [Playground](https://mihama.hotaru.icu) 中在线编辑并运行。
+可在 REPL 中交互，也可运行以 `.mh` 为后缀名的源文件，或者在 [Playground](https://l..icu) 中在线编辑并运行。
 
 ### CLI 使用
 
 ```bash
 A modern functional programming language with dependent types
 
-Usage: mihama.exe [OPTIONS] [COMMAND]
+Usage: senas.exe [OPTIONS] [COMMAND]
 
 Commands:
   repl
@@ -289,7 +289,7 @@ type Tree = <A> Node(A, List(Tree(A)))
 
 ### 类型别名
 
-Mihama 是一等类型的语言，类型别名本质就是与值一样的新绑定（不可变变量）：
+Sena 是一等类型的语言，类型别名本质就是与值一样的新绑定（不可变变量）：
 
 ```ts
 // ...
@@ -367,7 +367,7 @@ Result(Int) : Kind -> Kind
 Result : Kind -> Kind -> Kind
 ```
 
-`Kind` 即是类型的类型，不过其他大部分语言表示类型的类型选用的是 `Type`，但 Mihama 认为其太过宽泛。那么 `Kind` 的类型又是什么了？如果是 Agda 或者 Lean4 之类的语言你会看到（以 Lean4 为例）：
+`Kind` 即是类型的类型，不过其他大部分语言表示类型的类型选用的是 `Type`，但 Sena 认为其太过宽泛。那么 `Kind` 的类型又是什么了？如果是 Agda 或者 Lean4 之类的语言你会看到（以 Lean4 为例）：
 
 ```lean
 #check Type -- Type : Type 1
@@ -376,7 +376,7 @@ Result : Kind -> Kind -> Kind
 -- ...
 ```
 
-这被称作为 **类型宇宙（Type Universe）**，但对于目标是工业语言的 Mihama 而言太没必要，于是借鉴了 Idris2 的做法，`Kind` 的类型仍是 `Kind`：
+这被称作为 **类型宇宙（Type Universe）**，但对于目标是工业语言的 Sena 而言太没必要，于是借鉴了 Idris2 的做法，`Kind` 的类型仍是 `Kind`：
 
 ```bash
 > .t Kind
@@ -409,7 +409,7 @@ let #+:# = (str1, str2) => concat(str1, str2)
 #++#([1, 2], [3, 4]) // Normal function call
 ```
 
-其中 `#<...>#` 的语法表示保留为原始文本，类似于 Haskell 中定义中缀需要加括号 `(++)`，但对于偏 C-Like 的 Mihama 而言，括号已有太多语义，解析起来会很复杂，故选用了 `#`。
+其中 `#<...>#` 的语法表示保留为原始文本，类似于 Haskell 中定义中缀需要加括号 `(++)`，但对于偏 C-Like 的 Sena 而言，括号已有太多语义，解析起来会很复杂，故选用了 `#`。
 
 ### 模块
 

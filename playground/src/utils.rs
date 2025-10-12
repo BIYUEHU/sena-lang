@@ -11,7 +11,7 @@ use mihama_core::{
     lexer::Lexer,
 };
 
-use crate::example::{DEMO_CODE, FIBONACI_CODE, INFIX_CODE, LIST_CODE, MATCH_CODE};
+use crate::example::{DEMO_CODE, FIBONACI_CODE, INFIX_CODE, LIST_CODE, MATCH_CODE, PRELUDE_CODE};
 
 pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result<String, String> {
     let mut evaluator = Evaluator::new(new_evaluator_env());
@@ -88,6 +88,7 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
 pub fn get_example_code(name: String) -> &'static str {
     match name.as_str() {
         "fibonaci" => FIBONACI_CODE,
+        "prelude" => PRELUDE_CODE,
         "match" => MATCH_CODE,
         "demo" => DEMO_CODE,
         "list" => LIST_CODE,

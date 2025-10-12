@@ -7,6 +7,8 @@ use crate::utils::constant::MIHAMA_LANGUAGE_EXTENSION;
 
 pub mod error;
 
+pub const PRELUDE_CODE: &'static str = include_str!("../../../prelude.mh");
+
 #[derive(Debug, Clone)]
 pub struct Macro {
     pub params: Vec<String>,
@@ -210,6 +212,10 @@ impl Preprocessor {
         file_path: &str,
         context: &mut PreprocessContext,
     ) -> Result<String, PreprocessError> {
+        if file_path == "prelude" || file_path == "prelude.mh" {
+            return Ok(PRELUDE_CODE.to_string());
+        }
+
         let resolved_path = context.resolve_path(file_path);
 
         // 循环导入检测

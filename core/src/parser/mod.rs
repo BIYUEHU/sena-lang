@@ -245,9 +245,9 @@ impl Parser {
         };
 
         self.next_token_consume(&Token::Assign, "'=' after type name")?;
-        let params = if self.next_token_is(&Token::Less) {
+        let params = if self.next_token_is(&Token::LeftBracket) {
             self.next_token();
-            let params = self.identifier_list(Token::Greater)?;
+            let params = self.identifier_list(Token::RightBracket)?;
             if params.is_empty() {
                 return Err(self.error_invalid_syntax("type parameters couldn't be empty"));
             }
@@ -799,7 +799,7 @@ mod tests {
         );
 
         assert_eq!(
-            parse("type List = <T> Nil | Cons(T, List(T))"),
+            parse("type List = [T] Nil | Cons(T, List(T))"),
             vec![Stmt::Type {
                 name: "List".to_string(),
                 params: vec!["T".to_string()],
@@ -824,11 +824,11 @@ mod tests {
         );
 
         assert_eq!(
-            parse("type Color: Kind = Red | Green | Blue"),
+            parse("type Color: Type = Red | Green | Blue"),
             vec![Stmt::Type {
                 name: "Color".to_string(),
                 params: vec![],
-                kind_annotation: Some(TypeExpr::Con("Kind".to_string())),
+                kind_annotation: Some(TypeExpr::Con("Type".to_string())),
                 variants: vec![
                     TypeVariant {
                         name: "Red".to_string(),

@@ -5,6 +5,8 @@ use crate::lexer::token::Token;
 use crate::parser::ast::{Literal, Pattern};
 use crate::utils::{is_op_char, to_checked_expr};
 
+const RUNTIME_SUPPORT: &'static str = include_str!("support.js");
+
 pub struct JavaScriptTranspiler {
     generator: JavaScriptGenerator,
 }
@@ -388,7 +390,7 @@ impl CodeGenerator for JavaScriptGenerator {
     type Output = String;
 
     fn generate_program(&mut self, program: &[CheckedStmt]) -> String {
-        let mut lines = vec![self.runtime_support()];
+        let mut lines = vec![RUNTIME_SUPPORT.to_string()];
 
         for stmt in program {
             lines.push(self.generate_statement(stmt));
@@ -429,7 +431,7 @@ impl CodeGenerator for JavaScriptGenerator {
     fn generate_expression(&mut self, expr: &CheckedExpr) -> String {
         match expr {
             CheckedExpr::Ident { value, .. } => match value.as_str() {
-                "Kind" | "String" | "Int" | "Bool" | "Char" => format!("Mihama{}", value),
+                "Type" | "String" | "Int" | "Bool" | "Char" => format!("Mihama{}", value),
                 _ => self.sanitize_identifier(value),
             },
             CheckedExpr::Literal { value, .. } => self.generate_literal(value),
@@ -539,40 +541,6 @@ impl CodeGenerator for JavaScriptGenerator {
         );
 
         conditions.join(" :\n  ")
-    }
-
-    fn runtime_support(&self) -> String {
-        r#"class MihamaError extends Error { }
-
-  const mihamaCurry = (f) => {
-  const curried = (expectedLength, args) => ((...rest) => {
-    if (rest.length === 0 || expectedLength === 0) {
-      throw new MihamaError(`Arguments cannot be empty for function ${f.name}`);
-    }
-
-    if (rest.length === expectedLength) {
-      return f(...args, ...rest);
-    }
-
-    if (rest.length > expectedLength) {
-      throw new MihamaError(`Too many arguments for function ${f.name}`);
-    }
-
-    return curried(expectedLength - rest.length, [...args, ...rest])
-  });
-
-  return curried(f.length, []);
-}
-
-const createMihamaType = (tag) => ({ type_tag: tag })
-const createMihamaValue = (tag, value) => ({ value_tag: tag, value })
-
-const [MihamaKind, MihamaString, MihamaInt, MihamaBool, MihamaChar] = ["Kind", "String", "Int", "Bool", "Char"].map(createMihamaType)
-
-const print = console.log
-const get_timestamp = () => new Date().getTime() / 1000
-const concat = (a, b) => `${a}${b}`
-"#.to_string()
     }
 
     fn curry_function(&self, params: &[String], body: &str) -> String {
