@@ -19,6 +19,6 @@ mihama-core = { path = "core" }
 clap = { version = "4.5.40", features = ["derive"] }
 
 [workspace]
-members = [".", "playground", "core"]
+members = [".", "playground", "core", "ttt"]
 
 

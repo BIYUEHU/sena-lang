@@ -1784,6 +1784,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ttt"
+version = "0.1.0"
+dependencies = [
+ "mihama-core",
+]
+
+[[package]]
 name = "typed-builder"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
