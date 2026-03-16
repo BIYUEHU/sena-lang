@@ -5,8 +5,7 @@
 
 <!-- markdownlint-disable-next-line -->
 <img src="./extension/icons/icon.png" width="230" />
-
-![LICENSE](https://img.shields.io/badge/license-BCU-c06ac9) [![wakatime](https://wakatime.com/badge/user/018dc603-712a-4205-a226-d4c9ccd0d02b/project/5a7b91ab-6432-4729-8b56-bc6b70c9b93e.svg)](https://wakatime.com/badge/user/018dc603-712a-4205-a226-d4c9ccd0d02b/project/5a7b91ab-6432-4729-8b56-bc6b70c9b93e)
+ [![wakatime](https://wakatime.com/badge/user/018dc603-712a-4205-a226-d4c9ccd0d02b/project/5a7b91ab-6432-4729-8b56-bc6b70c9b93e.svg)](https://wakatime.com/badge/user/018dc603-712a-4205-a226-d4c9ccd0d02b/project/5a7b91ab-6432-4729-8b56-bc6b70c9b93e)
 [![Build](https://github.com/BIYUEHU/sena-lang/actions/workflows/build.yml/badge.svg)](https://github.com/BIYUEHU/sena-lang/actions/workflows/build.yml)
 
 <!-- markdownlint-disable-next-line -->
