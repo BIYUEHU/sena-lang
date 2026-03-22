@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use mihama::utils::{eval_code, get_checked_ast, parse_code, unsafe_eval_code, RunningMode};
+use mihama::utils::{eval_code, get_checked_ast, parse_code, transofrm_code, unsafe_eval_code};
 use mihama_core::{
     checker::Checker,
     env::{new_checker_env, new_evaluator_env},
@@ -13,7 +13,7 @@ use mihama_core::{
 
 use crate::example::{DEMO_CODE, FIBONACI_CODE, INFIX_CODE, LIST_CODE, MATCH_CODE, PRELUDE_CODE};
 
-pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result<String, String> {
+pub fn run_code(code: String, mode: String, view_type_info: bool) -> Result<String, String> {
     let mut evaluator = Evaluator::new(new_evaluator_env());
     let mut checker = Checker::new(new_checker_env());
     let mut result = String::new();
@@ -35,8 +35,8 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
     );
     evaluator.set_custom_func("get_timestamp".to_string(), Box::new(|_| Ok(1.into())));
 
-    match mode {
-        RunningMode::Lexer => {
+    match mode.as_str() {
+        "LEXER" => {
             for token in Lexer::new(&code) {
                 match token {
                     Ok(token) => result.push_str(&format!(" -> {}\n", token)),
@@ -44,7 +44,7 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
                 }
             }
         }
-        RunningMode::Parser => match parse_code(&code) {
+        "PARSER" => match parse_code(&code) {
             Ok(parser) => {
                 for stmt in parser {
                     match stmt {
@@ -55,7 +55,7 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
             }
             Err(err) => return Err(format!("Parser error: {}\n", err)),
         },
-        RunningMode::Checker => match get_checked_ast(&code, &mut checker) {
+        "CHECKER" => match get_checked_ast(&code, &mut checker) {
             Ok(program) => {
                 for stmt in program {
                     result.push_str(&format!(" : {:?}\n", stmt))
@@ -63,7 +63,7 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
             }
             Err(err) => return Err(format!("Checker error: {}\n", err)),
         },
-        RunningMode::Evaluator => match eval_code(&code, &mut checker, &mut evaluator) {
+        "EVALUATOR" => match eval_code(&code, &mut checker, &mut evaluator) {
             Ok(value) => result.push_str(&if view_type_info {
                 format!("> {} : {}\n", value.pretty_print(), value.type_info())
             } else {
@@ -71,7 +71,8 @@ pub fn run_code(code: String, mode: RunningMode, view_type_info: bool) -> Result
             }),
             Err(err) => return Err(err),
         },
-        RunningMode::UnsafeEvaluator => match unsafe_eval_code(&code, &mut evaluator) {
+        "TRANS_JS" => return transofrm_code(&code),
+        _ => match unsafe_eval_code(&code, &mut evaluator) {
             Ok(value) => {
                 result.push_str(&if view_type_info {
                     format!("> {} : {}\n", value.pretty_print(), value.type_info())

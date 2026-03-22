@@ -1,7 +1,5 @@
 use leptos::prelude::*;
 use leptos_meta::*;
-use mihama::utils::RunningMode;
-use mihama_core::transpiler::javascript::JavaScriptTranspiler;
 use utils::{get_example_code, run_code};
 
 use crate::example::PRELUDE_CODE;
@@ -13,8 +11,8 @@ mod utils;
 pub fn App() -> impl IntoView {
     provide_meta_context();
     let (code, set_code) = signal(PRELUDE_CODE.to_string());
-    let (js_code, set_js_code) = signal("".to_string());
-    let (runtime, set_runtime) = signal("wasm".to_string());
+    // let (js_code, set_js_code) = signal("".to_string());
+    // let (runtime, set_runtime) = signal("wasm".to_string());
     let (mode, set_mode) = signal("UNSAFE_EVALUATOR".to_string());
     let (view_type_info, set_view_type_info) = signal(true);
     let (output, set_output) = signal(String::new());
@@ -24,11 +22,7 @@ pub fn App() -> impl IntoView {
         set_output.set("".to_string());
         set_error.set("".to_string());
 
-        match run_code(
-            code.get(),
-            RunningMode::from(mode.get()),
-            view_type_info.get(),
-        ) {
+        match run_code(code.get(), mode.get(), view_type_info.get()) {
             Ok(output) => set_output.set(output),
             Err(error) => set_error.set(error.to_string()),
         };
@@ -50,17 +44,17 @@ pub fn App() -> impl IntoView {
         <div class="container">
             <h1>"Sena Playground"</h1>
             <r-divider></r-divider>
-            <span>"Runtime:"</span>
-            <select on:change:target=move |ev| {
-                set_runtime.set(get_example_code(ev.target().value()).to_string());
-            }>
-                <option value="wasm">"WebAssembly"</option>
-                <option value="js">"JavaScript"</option>
-            </select>
+            // <span>"Runtime:"</span>
+            // <select on:change:target=move |ev| {
+            //     set_runtime.set(get_example_code(ev.target().value()).to_string());
+            // }>
+            //     <option value="wasm">"WebAssembly"</option>
+            //     <option value="js">"JavaScript"</option>
+            // </select>
             <br />
             <span>"Example Code:"</span>
             <select on:change:target=move |ev| {
-                set_code.set(ev.target().value().to_string());
+                set_code.set(get_example_code(ev.target().value()).to_string());
             }>
                 <option value="">"Custom"</option>
                 <option value="hello_world">"Hello, world!"</option>
@@ -95,6 +89,7 @@ pub fn App() -> impl IntoView {
                 <option value="CHECKER">"Checker"</option>
                 <option value="EVALUATOR">"Evaluator (Checked)"</option>
                 <option value="UNSAFE_EVALUATOR" selected>"Unsafe Evaluator"</option>
+                <option value="TRANS_JS">"JavaScript Transpiler"</option>
             </select>
             <br />
             // {js_code_texturea}
