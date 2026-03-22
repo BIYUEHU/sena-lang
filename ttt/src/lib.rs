@@ -101,7 +101,9 @@ pub enum Type {
     TyVar(String),
     App(Box<Type>, Box<Type>),
     Arrow(Box<Type>, Box<Type>),
-    Forall(String, Box<Type>),
+    /// ∀(α: κ). τ — universally quantified type, with explicit kind on the binder.
+    /// In λ2 the kind is always `*`; in λω it may be any kind (e.g. `* → *`).
+    Forall(String, Kind, Box<Type>),
     /// **λω** — type-level lambda: `Λ(param : kind). body`.
     /// Has kind `kind → kind(body)`.
     TyAbs {
@@ -135,8 +137,13 @@ impl Type {
     pub fn arrow(arg: Type, ret: Type) -> Type {
         Type::Arrow(Box::new(arg), Box::new(ret))
     }
+    /// `∀(var: kind). body` — explicit kind on binder.
+    pub fn forall_kinded(var: impl Into<String>, kind: Kind, body: Type) -> Type {
+        Type::Forall(var.into(), kind, Box::new(body))
+    }
+    /// Convenience: `∀(var: *). body` — the common case.
     pub fn forall(var: impl Into<String>, body: Type) -> Type {
-        Type::Forall(var.into(), Box::new(body))
+        Type::Forall(var.into(), Kind::Star, Box::new(body))
     }
     pub fn app(self, arg: Type) -> Type {
         Type::App(Box::new(self), Box::new(arg))
@@ -168,11 +175,15 @@ impl Type {
                 Box::new(t1.subst_ty(var, replacement)),
                 Box::new(t2.subst_ty(var, replacement)),
             ),
-            Type::Forall(bound, body) => {
+            Type::Forall(bound, k, body) => {
                 if bound == var {
                     self.clone()
                 } else {
-                    Type::Forall(bound.clone(), Box::new(body.subst_ty(var, replacement)))
+                    Type::Forall(
+                        bound.clone(),
+                        k.clone(),
+                        Box::new(body.subst_ty(var, replacement)),
+                    )
                 }
             }
             Type::TyAbs { param, kind, body } => {
@@ -205,7 +216,7 @@ impl Type {
                 s.extend(t2.free_ty_vars());
                 s
             }
-            Type::Forall(b, body) => {
+            Type::Forall(b, _, body) => {
                 let mut s = body.free_ty_vars();
                 s.remove(b);
                 s
@@ -232,7 +243,7 @@ impl Type {
                 s.extend(t2.free_unif_vars());
                 s
             }
-            Type::Forall(_, body) | Type::TyAbs { body, .. } => body.free_unif_vars(),
+            Type::Forall(_, _, body) | Type::TyAbs { body, .. } => body.free_unif_vars(),
         }
     }
 
@@ -253,7 +264,7 @@ impl Type {
                 }
             }
             Type::Arrow(p, r) => Type::Arrow(Box::new(p.normalize()), Box::new(r.normalize())),
-            Type::Forall(v, b) => Type::Forall(v, Box::new(b.normalize())),
+            Type::Forall(v, k, b) => Type::Forall(v, k, Box::new(b.normalize())),
             Type::TyAbs { param, kind, body } => Type::TyAbs {
                 param,
                 kind,
@@ -287,10 +298,10 @@ pub fn resolve_type(ty: Type, bound: &HashSet<String>) -> Type {
             Box::new(resolve_type(*f, bound)),
             Box::new(resolve_type(*a, bound)),
         ),
-        Type::Forall(var, body) => {
+        Type::Forall(var, kind, body) => {
             let mut b = bound.clone();
             b.insert(var.clone());
-            Type::Forall(var, Box::new(resolve_type(*body, &b)))
+            Type::Forall(var, kind, Box::new(resolve_type(*body, &b)))
         }
         Type::TyAbs { param, kind, body } => {
             let mut b = bound.clone();
@@ -319,7 +330,10 @@ impl fmt::Display for Type {
                 }
                 _ => write!(f, "{} → {}", p, r),
             },
-            Type::Forall(v, body) => write!(f, "∀{}. {}", v, body),
+            Type::Forall(v, k, body) => match k {
+                Kind::Star => write!(f, "∀{}. {}", v, body),
+                _ => write!(f, "∀({}: {}). {}", v, k, body),
+            },
             Type::TyAbs { param, kind, body } => {
                 write!(f, "Λ({}: {}). {}", param, kind, body)
             }
@@ -336,11 +350,12 @@ impl fmt::Display for Type {
 pub enum TypeDecl {
     /// Algebraic data type.
     ///
-    /// `params` — type-parameter names (each has kind `*` in ADT position).
-    /// `constructors` — `(ctor_name, field_types)` with field types using
-    /// `TyVar` for parameter references (produced by `resolve_type`).
+    /// `params` — `(name, kind)` pairs. The name is used in constructor type
+    /// synthesis; the kind is used for kind-checking field types and computing
+    /// the overall kind of the type constructor.
+    /// Params must be listed in declaration order.
     Adt {
-        params: Vec<String>,
+        params: Vec<(String, Kind)>,
         constructors: Vec<(String, Vec<Type>)>,
     },
     /// Primitive / built-in type constant with an explicit kind.
@@ -376,8 +391,12 @@ impl TypeRegistry {
         self.decls.get(name)
     }
 
-    fn adt_kind(params: &[String]) -> Kind {
-        Kind::n_ary(params.len())
+    /// Compute the kind of the type constructor from its parameter kinds.
+    /// e.g. `[(a,*), (f,*→*)]` → `* → (* → *) → *`
+    fn adt_kind(params: &[(String, Kind)]) -> Kind {
+        params.iter().rfold(Kind::Star, |acc, (_, k)| {
+            Kind::Arrow(Box::new(k.clone()), Box::new(acc))
+        })
     }
 
     // ── Kind inference ────────────────────────────────────────────────────────
@@ -408,9 +427,9 @@ impl TypeRegistry {
                 Ok(Kind::Star)
             }
 
-            // ∀α. τ: α bound at kind *, body must be *, result is *.
-            Type::Forall(var, body) => {
-                let ext = kenv.extend(var.clone(), Kind::Star);
+            // ∀(α: κ). τ: α bound at kind κ (from binder), body must be *, result is *.
+            Type::Forall(var, k, body) => {
+                let ext = kenv.extend(var.clone(), k.clone());
                 self.check_kind(body, &Kind::Star, &ext)?;
                 Ok(Kind::Star)
             }
@@ -469,20 +488,24 @@ impl TypeRegistry {
     /// → Nothing : ∀a. Maybe a
     /// → Just    : ∀a. a → Maybe a
     /// ```
-    pub fn synthesize_ctor_type(adt_name: &str, params: &[String], fields: &[Type]) -> Type {
+    pub fn synthesize_ctor_type(
+        adt_name: &str,
+        params: &[(String, Kind)],
+        fields: &[Type],
+    ) -> Type {
         // Applied result type: `((Con(name) a₁) a₂) … aₙ`
         let result_ty = params
             .iter()
-            .fold(Type::Con(adt_name.to_string()), |acc, p| {
+            .fold(Type::Con(adt_name.to_string()), |acc, (p, _)| {
                 Type::App(Box::new(acc), Box::new(Type::TyVar(p.to_string())))
             });
         // Arrow chain over fields.
         let inner = fields.iter().rfold(result_ty, |ret, field| {
             Type::Arrow(Box::new(field.clone()), Box::new(ret))
         });
-        // Wrap in ∀ for each type parameter (outermost = first param).
-        params.iter().rfold(inner, |body, param| {
-            Type::Forall(param.clone(), Box::new(body))
+        // Wrap in ∀ for each type parameter, carrying its kind.
+        params.iter().rfold(inner, |body, (param, kind)| {
+            Type::Forall(param.clone(), kind.clone(), Box::new(body))
         })
     }
 }
@@ -689,10 +712,11 @@ impl InferState {
         }
     }
 
-    /// Replace all leading `∀` binders with fresh unification variables.
     fn instantiate(&mut self, ty: &Type) -> Type {
         match ty {
-            Type::Forall(var, body) => {
+            Type::Forall(var, _kind, body) => {
+                // Fresh unification variable (kind tracking for unif vars is
+                // deferred — they are assumed * which is fine for value-level use).
                 let fresh = self.fresh_var();
                 self.instantiate(&body.subst_ty(var, &fresh))
             }
@@ -718,7 +742,7 @@ impl InferState {
             result = Self::replace_unif_var(result, *var_id, &Type::TyVar(name.clone()));
         }
         for (_, name) in assignments.iter().rev() {
-            result = Type::Forall(name.clone(), Box::new(result));
+            result = Type::Forall(name.clone(), Kind::Star, Box::new(result));
         }
         result
     }
@@ -735,7 +759,9 @@ impl InferState {
                 Box::new(Self::replace_unif_var(*t1, id, rep)),
                 Box::new(Self::replace_unif_var(*t2, id, rep)),
             ),
-            Type::Forall(v, b) => Type::Forall(v, Box::new(Self::replace_unif_var(*b, id, rep))),
+            Type::Forall(v, k, b) => {
+                Type::Forall(v, k, Box::new(Self::replace_unif_var(*b, id, rep)))
+            }
             Type::TyAbs { param, kind, body } => Type::TyAbs {
                 param,
                 kind,
@@ -782,8 +808,15 @@ impl InferState {
                 self.unify(&a1, &a2)
             }
 
-            // ∀: unify bodies under a fresh Skolem.
-            (Type::Forall(a, b1), Type::Forall(b, b2)) => {
+            // ∀: kinds of binders must match, then unify bodies under a fresh Skolem.
+            (Type::Forall(a, k1, b1), Type::Forall(b, k2, b2)) => {
+                if k1 != k2 {
+                    return Err(format!(
+                        "Kind mismatch in ∀ unification: binder '{}' has kind '{}', \
+                         binder '{}' has kind '{}'",
+                        a, k1, b, k2
+                    ));
+                }
                 let sk = self.fresh_skolem();
                 self.unify(&b1.subst_ty(a, &sk), &b2.subst_ty(b, &sk))
             }
@@ -847,7 +880,7 @@ impl InferState {
             }
             Type::Arrow(p, r) => self.occurs_in(id, p) || self.occurs_in(id, r),
             Type::App(t1, t2) => self.occurs_in(id, t1) || self.occurs_in(id, t2),
-            Type::Forall(_, b) | Type::TyAbs { body: b, .. } => self.occurs_in(id, b),
+            Type::Forall(_, _, b) | Type::TyAbs { body: b, .. } => self.occurs_in(id, b),
             _ => false,
         }
     }
@@ -923,12 +956,16 @@ impl TypeChecker {
                 else_branch,
             } => Self::infer_if(condition, then_branch, else_branch, env, state, reg, kenv),
 
-            // Λα. e — bind α in kenv (kind *), infer body, wrap result in ∀.
+            // Λα. e — bind α in kenv (kind *), infer body, wrap result in ∀(α:*).
             Expr::TyLam { ty_param, body } => {
                 let ext = kenv.extend(ty_param.clone(), Kind::Star);
                 let body_ty = Self::infer(body, env, state, reg, &ext)?;
                 let body_ty = state.apply_subs(&body_ty);
-                Ok(Type::Forall(ty_param.clone(), Box::new(body_ty)))
+                Ok(Type::Forall(
+                    ty_param.clone(),
+                    Kind::Star,
+                    Box::new(body_ty),
+                ))
             }
 
             // e [τ] — type application.
@@ -937,7 +974,7 @@ impl TypeChecker {
                     .map_err(|e| format!("In type-application argument: {}", e))?;
                 let expr_ty = Self::infer(expr, env, state, reg, kenv)?;
                 match state.apply_subs(&expr_ty).normalize() {
-                    Type::Forall(var, body) => Ok(body.subst_ty(&var, ty).normalize()),
+                    Type::Forall(var, _k, body) => Ok(body.subst_ty(&var, ty).normalize()),
                     other => Err(format!("Type application requires ∀α. τ, got: {}", other)),
                 }
             }
@@ -1121,16 +1158,17 @@ pub enum Statement {
         ann: Option<Type>,
         value: Expr,
     },
-    /// `type Name a b … = Ctor₁ T… | Ctor₂ T… | …`
+    /// `type Name (a: *) (f: * → *) … = Ctor₁ T… | Ctor₂ T… | …`
     ///
     /// * Registers the ADT in `TypeRegistry`.
     /// * Injects each constructor's polytype into the value `TypeEnv`.
     ///
+    /// `params` — `(name, kind)` pairs. Omitted kinds default to `*`.
     /// Field types may use `Con("a")` for type parameters — `resolve_type` is
-    /// applied automatically with the declared parameter names as the bound set.
+    /// applied automatically.
     Type {
         name: String,
-        params: Vec<String>,
+        params: Vec<(String, Kind)>,
         constructors: Vec<(String, Vec<Type>)>,
     },
 }
@@ -1166,12 +1204,12 @@ impl Interpreter {
     fn process_type(
         &mut self,
         name: String,
-        params: Vec<String>,
+        params: Vec<(String, Kind)>,
         constructors: Vec<(String, Vec<Type>)>,
     ) -> Result<(), String> {
         // Param names must be distinct.
         let mut seen = HashSet::new();
-        for p in &params {
+        for (p, _) in &params {
             if !seen.insert(p.clone()) {
                 return Err(format!(
                     "Duplicate type parameter '{}' in type '{}'",
@@ -1180,14 +1218,15 @@ impl Interpreter {
             }
         }
 
-        // Kind env for checking field types: each param has kind *.
+        // Kind env: each param bound at its declared kind.
         let kenv = params
             .iter()
-            .fold(KindEnv::new(), |e, p| e.extend(p.clone(), Kind::Star));
-        // Bound set for resolve_type.
-        let bound: HashSet<String> = params.iter().cloned().collect();
+            .fold(KindEnv::new(), |e, (p, k)| e.extend(p.clone(), k.clone()));
+        // Bound set for resolve_type (only names matter here).
+        let bound: HashSet<String> = params.iter().map(|(p, _)| p.clone()).collect();
 
         // Resolve and kind-check constructor field types.
+        // Field types must have kind * (they classify values).
         let resolved_ctors = constructors
             .into_iter()
             .map(|(ctor_name, fields)| {
@@ -1195,19 +1234,15 @@ impl Interpreter {
                     .into_iter()
                     .map(|field| {
                         let resolved = resolve_type(field, &bound);
-                        if let Err(err) = self
-                            .checker
+                        self.checker
                             .registry
                             .check_kind(&resolved, &Kind::Star, &kenv)
                             .map_err(|e| {
                                 format!("Constructor '{}' of type '{}': {}", ctor_name, name, e)
-                            })
-                        {
-                            return Err(err);
-                        }
+                            })?;
                         Ok(resolved)
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, String>>()?;
                 Ok((ctor_name, resolved_fields))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -1232,17 +1267,13 @@ impl Interpreter {
 
     fn process_let(&mut self, name: String, ann: Option<Type>, value: Expr) -> Result<(), String> {
         // Resolve and kind-check annotation if provided.
-        let ann = ann
-            .map(|ty| {
+        let ann: Option<Type> = ann
+            .map(|ty| -> Result<Type, String> {
                 let resolved = resolve_type(ty, &HashSet::new());
-                if let Err(err) = self
-                    .checker
+                self.checker
                     .registry
                     .check_kind(&resolved, &Kind::Star, &KindEnv::new())
-                    .map_err(|e| format!("Annotation for '{}': {}", name, e))
-                {
-                    return Err(err);
-                }
+                    .map_err(|e| format!("Annotation for '{}': {}", name, e))?;
                 Ok(resolved)
             })
             .transpose()?;
@@ -1840,16 +1871,14 @@ mod statement_tests {
         interp
             .process(Statement::Type {
                 name: "Maybe".to_string(),
-                params: vec!["a".to_string()],
+                params: vec![("a".to_string(), Kind::Star)],
                 constructors: vec![
                     ("Nothing".to_string(), vec![]),
-                    // Parser would emit Con("a"); resolve_type converts it to TyVar("a").
                     ("Just".to_string(), vec![Type::Con("a".to_string())]),
                 ],
             })
             .unwrap();
 
-        // Registry should know Maybe.
         assert!(interp.checker.registry.get("Maybe").is_some());
 
         // Kind of Maybe: * → *
@@ -1858,10 +1887,11 @@ mod statement_tests {
             Kind::arrow(Kind::Star, Kind::Star)
         );
 
-        // Nothing : ∀a. Maybe a
+        // Nothing : ∀(a:*). Maybe a
         let nothing_ty = interp.type_of_name("Nothing").unwrap();
         let expected_nothing = Type::Forall(
             "a".to_string(),
+            Kind::Star,
             Box::new(Type::App(
                 Box::new(Type::Con("Maybe".to_string())),
                 Box::new(Type::TyVar("a".to_string())),
@@ -1869,10 +1899,11 @@ mod statement_tests {
         );
         assert_eq!(nothing_ty, expected_nothing);
 
-        // Just : ∀a. a → Maybe a
+        // Just : ∀(a:*). a → Maybe a
         let just_ty = interp.type_of_name("Just").unwrap();
         let expected_just = Type::Forall(
             "a".to_string(),
+            Kind::Star,
             Box::new(Type::Arrow(
                 Box::new(Type::TyVar("a".to_string())),
                 Box::new(Type::App(
@@ -1890,7 +1921,7 @@ mod statement_tests {
         interp
             .process(Statement::Type {
                 name: "Either".to_string(),
-                params: vec!["a".to_string(), "b".to_string()],
+                params: vec![("a".to_string(), Kind::Star), ("b".to_string(), Kind::Star)],
                 constructors: vec![
                     ("Left".to_string(), vec![Type::Con("a".to_string())]),
                     ("Right".to_string(), vec![Type::Con("b".to_string())]),
@@ -1904,12 +1935,14 @@ mod statement_tests {
             Kind::arrow(Kind::Star, Kind::arrow(Kind::Star, Kind::Star))
         );
 
-        // Left : ∀a. ∀b. a → Either a b
+        // Left : ∀(a:*). ∀(b:*). a → Either a b
         let left_ty = interp.type_of_name("Left").unwrap();
         let expected = Type::Forall(
             "a".to_string(),
+            Kind::Star,
             Box::new(Type::Forall(
                 "b".to_string(),
+                Kind::Star,
                 Box::new(Type::Arrow(
                     Box::new(Type::TyVar("a".to_string())),
                     Box::new(Type::App(
@@ -1928,7 +1961,6 @@ mod statement_tests {
     #[test]
     fn test_invalid_field_type_fails() {
         let mut interp = Interpreter::new();
-        // Field type Con("Banana") is not in registry → kind check fails.
         let result = interp.process(Statement::Type {
             name: "Bad".to_string(),
             params: vec![],
@@ -1942,7 +1974,7 @@ mod statement_tests {
         let mut interp = Interpreter::new();
         let result = interp.process(Statement::Type {
             name: "Bad".to_string(),
-            params: vec!["a".to_string(), "a".to_string()],
+            params: vec![("a".to_string(), Kind::Star), ("a".to_string(), Kind::Star)],
             constructors: vec![],
         });
         assert!(result.is_err());
@@ -1984,7 +2016,7 @@ mod statement_tests {
         let id_ty = interp.type_of_name("id").unwrap();
         // Should be a Forall.
         assert!(
-            matches!(id_ty, Type::Forall(_, _)),
+            matches!(id_ty, Type::Forall(_, _, _)),
             "Expected ∀α. α → α, got {:?}",
             id_ty
         );
@@ -2051,7 +2083,7 @@ mod statement_tests {
         interp
             .process(Statement::Type {
                 name: "Maybe".to_string(),
-                params: vec!["a".to_string()],
+                params: vec![("a".to_string(), Kind::Star)],
                 constructors: vec![
                     ("Nothing".to_string(), vec![]),
                     ("Just".to_string(), vec![Type::Con("a".to_string())]),
@@ -2110,11 +2142,12 @@ mod resolve_tests {
 
     #[test]
     fn test_resolve_forall_body() {
-        // ∀a. a → Int  — the parser emits Con("a") for the bound variable.
+        // ∀(a:*). a → Int  — the parser emits Con("a") for the bound variable.
         let ty = Type::Forall(
             "a".to_string(),
+            Kind::Star,
             Box::new(Type::Arrow(
-                Box::new(Type::Con("a".to_string())), // Con, not TyVar
+                Box::new(Type::Con("a".to_string())),
                 Box::new(Type::Con("Int".to_string())),
             )),
         );
@@ -2123,8 +2156,9 @@ mod resolve_tests {
             resolved,
             Type::Forall(
                 "a".to_string(),
+                Kind::Star,
                 Box::new(Type::Arrow(
-                    Box::new(Type::TyVar("a".to_string())), // now TyVar ✓
+                    Box::new(Type::TyVar("a".to_string())),
                     Box::new(Type::Con("Int".to_string())),
                 )),
             )
@@ -2133,30 +2167,30 @@ mod resolve_tests {
 
     #[test]
     fn test_resolve_does_not_affect_outer_con() {
-        // Con("Int") outside any binder stays Con("Int").
         let ty = Type::Con("Int".to_string());
         assert_eq!(resolve_type(ty.clone(), &HashSet::new()), ty);
     }
 
     #[test]
     fn test_resolve_shadowing() {
-        // ∀a. (∀a. a) → a  — inner `a` and outer `a` are distinct binders.
+        // ∀(a:*). (∀(a:*). a) → a
         let ty = Type::Forall(
             "a".to_string(),
+            Kind::Star,
             Box::new(Type::Arrow(
                 Box::new(Type::Forall(
                     "a".to_string(),
+                    Kind::Star,
                     Box::new(Type::Con("a".to_string())),
                 )),
                 Box::new(Type::Con("a".to_string())),
             )),
         );
         let resolved = resolve_type(ty, &HashSet::new());
-        // Both inner and outer `a` should become TyVar("a").
-        if let Type::Forall(_, outer_body) = resolved {
+        if let Type::Forall(_, _, outer_body) = resolved {
             if let Type::Arrow(inner_forall, outer_a) = *outer_body {
                 assert_eq!(*outer_a, Type::TyVar("a".to_string()));
-                if let Type::Forall(_, inner_body) = *inner_forall {
+                if let Type::Forall(_, _, inner_body) = *inner_forall {
                     assert_eq!(*inner_body, Type::TyVar("a".to_string()));
                 } else {
                     panic!("Expected inner Forall");
@@ -2172,9 +2206,10 @@ mod resolve_tests {
     #[test]
     fn test_resolve_with_explicit_bound_set() {
         // Simulates a parser that collected explicit ∀[a, b] params before body.
-        let body = Type::Arrow(
-            Box::new(Type::Con("a".to_string()).app(Type::Con("b".to_string()))),
-            Box::new(Type::Con("Int".to_string())),
+        // Bug fix: Type::Arrow takes Box<Type> — use smart constructor.
+        let body = Type::arrow(
+            Type::Con("a".to_string()).app(Type::Con("b".to_string())),
+            Type::Con("Int".to_string()),
         );
         let bound: HashSet<String> = vec!["a".to_string(), "b".to_string()].into_iter().collect();
         let resolved = resolve_type(body, &bound);

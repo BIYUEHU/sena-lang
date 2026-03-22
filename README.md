@@ -15,16 +15,63 @@
 
 > Developing...
 
-- **Sena** 是一门以 λ-cube 为设计目标、支持一等类型与依赖类型、多后端、多范式、现代化的函数式编程语言。
-- **Sena** is a functional programming language with a design goal of λ-cube, supporting first-class types and dependent types, multiple backends, multiple paradigms, and modern features.
+- **Sena** 是一门支持一等类型与依赖类型、多后端、多范式、现代化的函数式编程语言。
+- **Sena** is a functional programming language, supporting first-class types and dependent types, multiple backends, multiple paradigms, and modern features.
 
 ## Advantages
 
-- **现代化语言**：摒弃迂腐的传统 C 系语言的经典概念和糟粕语法，保持语法简洁与语义统一（不区分普通函数与匿名函数）
-- **强大类型系统**：引入并推广依赖类型、一等类型、类型类、高阶类型等特性到工业界，并提升语言的表达能力与可靠性，希望实现 λ-cube 的所有角落（如 Idris2）
+- **现代化语言**：摒弃迂腐的传统 C 系语言的经典概念和糟粕语法，保持语法简洁与语义统一（如不区分普通函数与匿名函数）
+- **强大类型系统**：引入并推广一等类型、类型类、高阶类型等特性到工业界，并提升语言的表达能力与可靠性
 - **工业友好**：基于 Haskell、Idris、OCaml 等 ML 系语言特性，保持工业开发者熟悉语法（`{}` 块、`f(x)` 函数调用、JS 风格语法）以降低门槛
 - **多后端**：希望支持多种动态语言后端，包括 JavaScript、Python、Ruby、Lua、Common Lisp，并支持 LLVM、Wasm、Native C 等后端，但绝不会考虑虚拟机
 - **多范式**：在保持语法简洁性和语义统一性前提下效仿 Scala 将 OOP 与 FP 高度融合
+
+## Anchoring
+
+经过几个月的痛定思痛，秉持着打造一门有其独特亮点的现代函数式语言，决定放弃引入完整的依赖类型。
+
+具体地说，引入一等类型但不包括依赖类型以及类型宇宙等复杂特性，延续类似于 Haskell 中的 `Kind` 系统。首先明确 `Kind` 包含什么以及它和类型宇宙的区别（Haskell-Like 伪代码）：
+
+```haskell
+1 :: Int
+Int :: *
+Maybe :: * -> *
+```
+
+此处的 `*` 和 `* -> *` 即分别为 `Kind` 中的 `Star`（相当于 `Type`） 和 `Arrow`。当然 Haskell 中的 `Kind` 还包括 `Constraint` 乃至 `DataKinds` 扩展可以提升类型为 `Kind`，不过这不在讨论范围内了。类型宇宙则提供了一个更纯粹统一的视角：
+
+```haskell
+1 :: Int
+Int :: Type
+Type :: Type 1
+Type 1 :: Type 2
+-- ...
+```
+
+无限地累积下去就会变成一个垂直上升的结构，Lean4 中即是如此，而 Idris2 现阶段未实现类型宇宙，只能 `Type : Type` 这意味着可以直接构造出罗素悖论。实现依赖类型本身就很复杂，而实现依赖类型也自然会带来类型宇宙，有了类型宇宙也必须一并引入宇宙多态，如此工程量是极不划算的。
+
+做这个项目的初衷一方面是一等类型确实有趣，当然依赖类型也很有趣，但对于工业导向还是太无必要了，也无必须可以定理证明的硬性需求。另一方面是哀于 TypeScript 它有着极强类型编程能力，可类型层面和值层面是完全隔离的两个世界和两套语法，实在遗憾。Zig 的编译时计算类型的特性也很不错，至少语法统一了，但碍于 Zig 的类型系统比 TypeScript 弱太多无法玩出花样，其次运行时依旧不存在令人遗憾。对比下来，Sena 的定位及目标也就明确了。
+
+总的来说，一等类型意味着 `Type` 具有一等性，但 `Kind` 不具有一等性，如有这样的行为：
+
+```ts
+let foo = 1 // foo : Int
+let Foo = Int // foo : Type
+let FOO = Type // Error!
+```
+
+通俗地说，`Type`、`Type -> Int`、`Type -> Type` 等只要出现了 `Type` 的就无法作为值表达式传递，但若是 `Int`或 `Int -> Int` 等则可以。虽然不支持依赖类型（即类型依赖于值），但对于类型算子允许在编译时做一些静态字面量值计算，如：
+
+```ts
+let F: Int -> Type = (x) => match x
+  | 0 => Int
+  | 1 => String
+  | _ => Bool
+
+let x: F(1) = "hi"
+```
+
+这看着会像 Scala3 的 `TypeLambda`，因为其也支持在类型层面做 `match`，但本质上截然不同，首先 Scala3 中的 `0`、`hi` 等是字面量类型而非值，`match` 也只是其类型层面的特殊语法。而 Sena 中的这一切均来自一等类型，与普通的值操作别无二致，只是说在参与编译时的类型计算里一切都必须纯且可停机（这将涉及后续设计细节了），在 Idris2 等语言亦是如此。
 
 ## Features
 
@@ -50,7 +97,7 @@
 - 完善的系统 F（System F）
 - 类型类（Trait/Typeclass）
 - 高阶类型（Higher-order type）
-- 依赖类型（分阶段引入）
+<!-- - 依赖类型（分阶段引入） -->
 - 更完善的宏与模块系统
 - LSP 与更友好的错误提示
 - 更多的动态语言后端支持：Python、Ruby、Lua、Common Lisp
