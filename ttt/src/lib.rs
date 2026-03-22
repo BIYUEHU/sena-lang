@@ -1,10 +1,28 @@
+//! System Fω — extends the λ2 implementation with:
+//!
+//! * **Kind system** (`Kind::Star`, `Kind::Arrow`)
+//! * **`Type::TyAbs`** — type-level lambda `Λ(α: κ). τ`
+//! * **`Type::normalize`** — beta-reduce type-level redexes before unification
+//! * **`TypeRegistry`** — global registry of type declarations; pre-seeded with
+//!   built-in primitive types
+//! * **`KindEnv`** — kind environment threaded through kind/type checking
+//! * **`resolve_type`** — post-parser pass: `Con("a")` → `TyVar("a")` for bound names
+//! * **`Statement`** — top-level `let` and `type` declarations
+//! * **`Interpreter`** — processes statements, growing the shared environments
+//!
+//! All existing λ2 tests pass unchanged.
+
+#![allow(dead_code)]
+
 use std::{
     collections::{HashMap, HashSet},
     fmt,
     mem::take,
 };
 
-// ==================== Literals ====================
+// ==============================================================================
+// Literals
+// ==============================================================================
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Literal {
@@ -16,33 +34,84 @@ pub enum Literal {
     Unit,
 }
 
-// ==================== Types ====================
+// ==============================================================================
+// Kind
+// ==============================================================================
 
-/// System F types.
+/// The kind of a type expression — "the type of types".
 ///
-/// Two distinct notions of "type variable" exist:
-/// - `Var(usize)`: unification/inference variable (internal, assigned fresh during inference,
-///   can be substituted via the substitution map).
-/// - `TyVar(String)`: named, *rigid* type variable — bound by a `∀` binder or introduced by
-///   a type abstraction `Λ`. These are *never* unified away; they can only unify with
-///   themselves.
+/// ```text
+/// *           — proper type (can classify values)
+/// * → *       — unary type constructor (e.g. Maybe)
+/// * → * → *   — binary type constructor (e.g. Either)
+/// ```
 #[derive(Clone, PartialEq, Debug)]
-pub enum Type {
-    /// Monomorphic type constant: `Int`, `Bool`, `String`, …
-    Con(String),
-    /// Unification/inference variable — internal, created fresh during inference.
-    Var(usize),
-    /// Named rigid type variable — bound by `∀` or introduced by `Λ`.
-    TyVar(String),
-    /// Type application: e.g. `Maybe Int` ≡ `App(Con("Maybe"), Con("Int"))`.
-    App(Box<Type>, Box<Type>),
-    /// Function type: `τ₁ → τ₂`.
-    Arrow(Box<Type>, Box<Type>),
-    /// Universal quantification: `∀α. τ`.
-    Forall(String, Box<Type>),
+pub enum Kind {
+    Star,
+    Arrow(Box<Kind>, Box<Kind>),
 }
 
-// ---- Smart constructors ----
+impl Kind {
+    pub fn star() -> Self {
+        Kind::Star
+    }
+
+    pub fn arrow(k1: Kind, k2: Kind) -> Self {
+        Kind::Arrow(Box::new(k1), Box::new(k2))
+    }
+
+    /// Build `* → * → … → *` (n arrows) for an n-parameter type constructor.
+    ///
+    /// `n_ary(0)` = `*`, `n_ary(1)` = `* → *`, `n_ary(2)` = `* → * → *`.
+    pub fn n_ary(n: usize) -> Self {
+        (0..n).fold(Kind::Star, |acc, _| {
+            Kind::Arrow(Box::new(Kind::Star), Box::new(acc))
+        })
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Kind::Star => write!(f, "*"),
+            Kind::Arrow(k1, k2) => match k1.as_ref() {
+                Kind::Arrow(_, _) => write!(f, "({}) → {}", k1, k2),
+                _ => write!(f, "{} → {}", k1, k2),
+            },
+        }
+    }
+}
+
+// ==============================================================================
+// Types
+// ==============================================================================
+
+/// Type AST for System Fω.
+///
+/// Two distinct notions of "type variable":
+/// * `Var(usize)` — unification variable, internal to inference, substituted away.
+/// * `TyVar(String)` — rigid named variable, bound by `∀` or `Λ` (never unified).
+///
+/// Free `TyVar`s whose kind is not in the `KindEnv` are assumed to have kind `*`
+/// (open-term friendly; strict mode can be added later).
+#[derive(Clone, PartialEq, Debug)]
+pub enum Type {
+    Con(String),
+    Var(usize),
+    TyVar(String),
+    App(Box<Type>, Box<Type>),
+    Arrow(Box<Type>, Box<Type>),
+    Forall(String, Box<Type>),
+    /// **λω** — type-level lambda: `Λ(param : kind). body`.
+    /// Has kind `kind → kind(body)`.
+    TyAbs {
+        param: String,
+        kind: Kind,
+        body: Box<Type>,
+    },
+}
+
+// ── Smart constructors ─────────────────────────────────────────────────────────
 
 macro_rules! gen_type_constructors {
     ($($name:ident),* $(,)?) => {
@@ -50,39 +119,46 @@ macro_rules! gen_type_constructors {
             $(
                 pub fn $name() -> Self {
                     let mut chars = stringify!($name).chars();
-                    Type::Con(format!("{}{}", chars.next().unwrap().to_uppercase(), chars.collect::<String>()))
+                    Type::Con(format!(
+                        "{}{}",
+                        chars.next().unwrap().to_uppercase(),
+                        chars.collect::<String>()
+                    ))
                 }
             )*
         }
     };
 }
-
 gen_type_constructors!(int, float, bool, string, char, unit);
 
 impl Type {
     pub fn arrow(arg: Type, ret: Type) -> Type {
         Type::Arrow(Box::new(arg), Box::new(ret))
     }
-
     pub fn forall(var: impl Into<String>, body: Type) -> Type {
         Type::Forall(var.into(), Box::new(body))
     }
-
     pub fn app(self, arg: Type) -> Type {
         Type::App(Box::new(self), Box::new(arg))
     }
-
     pub fn ty_var(name: impl Into<String>) -> Type {
         Type::TyVar(name.into())
     }
+    pub fn ty_abs(param: impl Into<String>, kind: Kind, body: Type) -> Type {
+        Type::TyAbs {
+            param: param.into(),
+            kind,
+            body: Box::new(body),
+        }
+    }
 
-    // ---- Substitution ----
+    // ── Substitution ──────────────────────────────────────────────────────────
 
-    /// Substitute all free occurrences of the *named* type variable `var` with `replacement`.
-    /// Respects shadowing: stops descending into `∀var. …`.
+    /// Substitute all free occurrences of named type variable `var` with
+    /// `replacement`, respecting shadowing in `∀` and `Λ` binders.
     pub fn subst_ty(&self, var: &str, replacement: &Type) -> Type {
         match self {
-            Type::TyVar(name) if name == var => replacement.clone(),
+            Type::TyVar(n) if n == var => replacement.clone(),
             Type::TyVar(_) | Type::Con(_) | Type::Var(_) => self.clone(),
             Type::Arrow(p, r) => Type::Arrow(
                 Box::new(p.subst_ty(var, replacement)),
@@ -94,24 +170,30 @@ impl Type {
             ),
             Type::Forall(bound, body) => {
                 if bound == var {
-                    self.clone() // shadowed — do not substitute
+                    self.clone()
                 } else {
                     Type::Forall(bound.clone(), Box::new(body.subst_ty(var, replacement)))
+                }
+            }
+            Type::TyAbs { param, kind, body } => {
+                if param == var {
+                    self.clone()
+                } else {
+                    Type::TyAbs {
+                        param: param.clone(),
+                        kind: kind.clone(),
+                        body: Box::new(body.subst_ty(var, replacement)),
+                    }
                 }
             }
         }
     }
 
-    // ---- Free variable analysis ----
+    // ── Free variable sets ────────────────────────────────────────────────────
 
-    /// Free *named* type variables (rigid `TyVar`s not bound by any enclosing `∀`).
     pub fn free_ty_vars(&self) -> HashSet<String> {
         match self {
-            Type::TyVar(name) => {
-                let mut s = HashSet::new();
-                s.insert(name.clone());
-                s
-            }
+            Type::TyVar(n) => std::iter::once(n.clone()).collect(),
             Type::Con(_) | Type::Var(_) => HashSet::new(),
             Type::Arrow(p, r) => {
                 let mut s = p.free_ty_vars();
@@ -123,23 +205,22 @@ impl Type {
                 s.extend(t2.free_ty_vars());
                 s
             }
-            Type::Forall(bound, body) => {
+            Type::Forall(b, body) => {
                 let mut s = body.free_ty_vars();
-                s.remove(bound);
+                s.remove(b);
+                s
+            }
+            Type::TyAbs { param, body, .. } => {
+                let mut s = body.free_ty_vars();
+                s.remove(param);
                 s
             }
         }
     }
 
-    /// Free *unification* variables (`Var(usize)`).
-    /// Traverses into `∀` binders — a `Var` is never bound by a `∀`.
     pub fn free_unif_vars(&self) -> HashSet<usize> {
         match self {
-            Type::Var(id) => {
-                let mut s = HashSet::new();
-                s.insert(*id);
-                s
-            }
+            Type::Var(id) => std::iter::once(*id).collect(),
             Type::Con(_) | Type::TyVar(_) => HashSet::new(),
             Type::Arrow(p, r) => {
                 let mut s = p.free_unif_vars();
@@ -151,12 +232,79 @@ impl Type {
                 s.extend(t2.free_unif_vars());
                 s
             }
-            Type::Forall(_, body) => body.free_unif_vars(),
+            Type::Forall(_, body) | Type::TyAbs { body, .. } => body.free_unif_vars(),
+        }
+    }
+
+    // ── Beta normalization ────────────────────────────────────────────────────
+
+    /// Reduce all type-level beta redexes: `(Λα. τ) σ → τ[σ/α]`.
+    ///
+    /// Called before unification so that type aliases (defined as `TyAbs`) are
+    /// transparent to the unifier and `App(Ref, arg)` reduces correctly.
+    pub fn normalize(self) -> Type {
+        match self {
+            Type::App(f, a) => {
+                let f = f.normalize();
+                let a = a.normalize();
+                match f {
+                    Type::TyAbs { param, body, .. } => body.subst_ty(&param, &a).normalize(),
+                    _ => Type::App(Box::new(f), Box::new(a)),
+                }
+            }
+            Type::Arrow(p, r) => Type::Arrow(Box::new(p.normalize()), Box::new(r.normalize())),
+            Type::Forall(v, b) => Type::Forall(v, Box::new(b.normalize())),
+            Type::TyAbs { param, kind, body } => Type::TyAbs {
+                param,
+                kind,
+                body: Box::new(body.normalize()),
+            },
+            other => other,
         }
     }
 }
 
-// ---- Display ----
+// ── resolve_type ──────────────────────────────────────────────────────────────
+
+/// Post-parser pass: convert `Con(name)` → `TyVar(name)` for names in `bound`.
+///
+/// The parser cannot distinguish a type variable from a type constant
+/// syntactically, so it emits everything as `Con`. Call this function on all
+/// `Type` values produced by the parser before handing them to the type checker.
+/// `bound` grows as we descend into `∀` and `Λ` binders.
+///
+/// When using *explicit* forall parameter lists (e.g. `∀[a, b]. a → b → a`),
+/// initialise `bound` with those names before calling.
+pub fn resolve_type(ty: Type, bound: &HashSet<String>) -> Type {
+    match ty {
+        Type::Con(ref n) if bound.contains(n.as_str()) => Type::TyVar(n.clone()),
+        Type::Con(_) | Type::Var(_) | Type::TyVar(_) => ty,
+        Type::Arrow(p, r) => Type::Arrow(
+            Box::new(resolve_type(*p, bound)),
+            Box::new(resolve_type(*r, bound)),
+        ),
+        Type::App(f, a) => Type::App(
+            Box::new(resolve_type(*f, bound)),
+            Box::new(resolve_type(*a, bound)),
+        ),
+        Type::Forall(var, body) => {
+            let mut b = bound.clone();
+            b.insert(var.clone());
+            Type::Forall(var, Box::new(resolve_type(*body, &b)))
+        }
+        Type::TyAbs { param, kind, body } => {
+            let mut b = bound.clone();
+            b.insert(param.clone());
+            Type::TyAbs {
+                param,
+                kind,
+                body: Box::new(resolve_type(*body, &b)),
+            }
+        }
+    }
+}
+
+// ── Display ───────────────────────────────────────────────────────────────────
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -166,59 +314,260 @@ impl fmt::Display for Type {
             Type::TyVar(n) => write!(f, "{}", n),
             Type::App(func, arg) => write!(f, "({} {})", func, arg),
             Type::Arrow(p, r) => match p.as_ref() {
-                Type::Arrow(_, _) | Type::Forall(_, _) => write!(f, "({}) → {}", p, r),
+                Type::Arrow(_, _) | Type::Forall(_, _) | Type::TyAbs { .. } => {
+                    write!(f, "({}) → {}", p, r)
+                }
                 _ => write!(f, "{} → {}", p, r),
             },
             Type::Forall(v, body) => write!(f, "∀{}. {}", v, body),
+            Type::TyAbs { param, kind, body } => {
+                write!(f, "Λ({}: {}). {}", param, kind, body)
+            }
         }
     }
 }
 
-// ==================== Expressions ====================
+// ==============================================================================
+// Type Registry
+// ==============================================================================
+
+/// A declared type in the global registry.
+#[derive(Clone, Debug)]
+pub enum TypeDecl {
+    /// Algebraic data type.
+    ///
+    /// `params` — type-parameter names (each has kind `*` in ADT position).
+    /// `constructors` — `(ctor_name, field_types)` with field types using
+    /// `TyVar` for parameter references (produced by `resolve_type`).
+    Adt {
+        params: Vec<String>,
+        constructors: Vec<(String, Vec<Type>)>,
+    },
+    /// Primitive / built-in type constant with an explicit kind.
+    Primitive(Kind),
+}
+
+/// Global registry of type-level declarations.
+///
+/// Pre-seeded with all built-in primitive types (all `*`).
+/// User-defined ADTs are added via `Statement::Type`.
+#[derive(Clone, Debug)]
+pub struct TypeRegistry {
+    decls: HashMap<String, TypeDecl>,
+}
+
+impl TypeRegistry {
+    pub fn new() -> Self {
+        let mut reg = Self {
+            decls: HashMap::new(),
+        };
+        for name in &["Int", "Float", "Bool", "String", "Char", "Unit"] {
+            reg.decls
+                .insert(name.to_string(), TypeDecl::Primitive(Kind::Star));
+        }
+        reg
+    }
+
+    pub fn register(&mut self, name: String, decl: TypeDecl) {
+        self.decls.insert(name, decl);
+    }
+
+    pub fn get(&self, name: &str) -> Option<&TypeDecl> {
+        self.decls.get(name)
+    }
+
+    fn adt_kind(params: &[String]) -> Kind {
+        Kind::n_ary(params.len())
+    }
+
+    // ── Kind inference ────────────────────────────────────────────────────────
+
+    /// Infer the kind of a type expression in `kenv`.
+    ///
+    /// Free `TyVar`s not present in `kenv` are assumed kind `*` (open-term
+    /// friendly — a strict mode can reject them if needed).
+    pub fn kind_of(&self, ty: &Type, kenv: &KindEnv) -> Result<Kind, String> {
+        match ty {
+            // Type constant: look up registry.
+            Type::Con(name) => match self.decls.get(name) {
+                Some(TypeDecl::Primitive(k)) => Ok(k.clone()),
+                Some(TypeDecl::Adt { params, .. }) => Ok(Self::adt_kind(params)),
+                None => Err(format!("Unknown type constructor: '{}'", name)),
+            },
+
+            // Named type variable: look up kind env; assume * if free.
+            Type::TyVar(name) => Ok(kenv.get(name).unwrap_or(Kind::Star)),
+
+            // Unification variable: assumed *.
+            Type::Var(_) => Ok(Kind::Star),
+
+            // τ₁ → τ₂: both sides must be *, result is *.
+            Type::Arrow(p, r) => {
+                self.check_kind(p, &Kind::Star, kenv)?;
+                self.check_kind(r, &Kind::Star, kenv)?;
+                Ok(Kind::Star)
+            }
+
+            // ∀α. τ: α bound at kind *, body must be *, result is *.
+            Type::Forall(var, body) => {
+                let ext = kenv.extend(var.clone(), Kind::Star);
+                self.check_kind(body, &Kind::Star, &ext)?;
+                Ok(Kind::Star)
+            }
+
+            // f a: f must have kind k₁ → k₂, a must have kind k₁, result k₂.
+            //
+            // If f is a TyAbs, normalize first so the App reduces before kind
+            // checking (handles inline type aliases).
+            Type::App(f, a) => {
+                // Try beta-reduce first (handles TyAbs on the left).
+                let normalized = ty.clone().normalize();
+                if normalized != *ty {
+                    return self.kind_of(&normalized, kenv);
+                }
+                match self.kind_of(f, kenv)? {
+                    Kind::Arrow(k1, k2) => {
+                        self.check_kind(a, &k1, kenv)?;
+                        Ok(*k2)
+                    }
+                    other => Err(format!(
+                        "Kind mismatch in type application: \
+                         left-hand side has kind '{}', expected an arrow kind\n  \
+                         in: ({}) ({})",
+                        other, f, a
+                    )),
+                }
+            }
+
+            // Λ(α: κ). τ: result kind is κ → kind(τ).
+            Type::TyAbs { param, kind, body } => {
+                let ext = kenv.extend(param.clone(), kind.clone());
+                let body_kind = self.kind_of(body, &ext)?;
+                Ok(Kind::Arrow(Box::new(kind.clone()), Box::new(body_kind)))
+            }
+        }
+    }
+
+    pub fn check_kind(&self, ty: &Type, expected: &Kind, kenv: &KindEnv) -> Result<(), String> {
+        let actual = self.kind_of(ty, kenv)?;
+        if actual == *expected {
+            Ok(())
+        } else {
+            Err(format!(
+                "Kind mismatch: expected '{}', got '{}'\n  in type: {}",
+                expected, actual, ty
+            ))
+        }
+    }
+
+    // ── Constructor type synthesis ────────────────────────────────────────────
+
+    /// Synthesise the polytype for a data constructor.
+    ///
+    /// ```text
+    /// type Maybe a = Nothing | Just a
+    /// → Nothing : ∀a. Maybe a
+    /// → Just    : ∀a. a → Maybe a
+    /// ```
+    pub fn synthesize_ctor_type(adt_name: &str, params: &[String], fields: &[Type]) -> Type {
+        // Applied result type: `((Con(name) a₁) a₂) … aₙ`
+        let result_ty = params
+            .iter()
+            .fold(Type::Con(adt_name.to_string()), |acc, p| {
+                Type::App(Box::new(acc), Box::new(Type::TyVar(p.to_string())))
+            });
+        // Arrow chain over fields.
+        let inner = fields.iter().rfold(result_ty, |ret, field| {
+            Type::Arrow(Box::new(field.clone()), Box::new(ret))
+        });
+        // Wrap in ∀ for each type parameter (outermost = first param).
+        params.iter().rfold(inner, |body, param| {
+            Type::Forall(param.clone(), Box::new(body))
+        })
+    }
+}
+
+impl Default for TypeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ==============================================================================
+// Kind Environment
+// ==============================================================================
+
+/// Mapping from type-variable names to their kinds.
+/// Immutable-extend style — no parent chain needed (always small).
+#[derive(Clone, Debug, Default)]
+pub struct KindEnv {
+    bindings: HashMap<String, Kind>,
+}
+
+impl KindEnv {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn extend(&self, name: String, kind: Kind) -> Self {
+        let mut new = self.clone();
+        new.bindings.insert(name, kind);
+        new
+    }
+
+    pub fn get(&self, name: &str) -> Option<Kind> {
+        self.bindings.get(name).cloned()
+    }
+}
+
+// ==============================================================================
+// Expressions
+// ==============================================================================
 
 pub enum Expr {
-    /// Variable reference.
     Ident(String),
-    /// Literal value.
     Literal(Literal),
-    /// Lambda abstraction: `λ(x₁ [: τ₁], …) [: τ_ret] → body`.
     Lambda {
         params: Vec<(String, Option<Type>)>,
         body: Box<Expr>,
         return_type: Option<Type>,
     },
-    /// Function application: `f(a₁, a₂, …)` (curried internally).
     Call {
         callee: Box<Expr>,
         params: Vec<Expr>,
     },
-    /// Conditional expression.
     If {
         condition: Box<Expr>,
         then_branch: Box<Expr>,
         else_branch: Box<Expr>,
     },
-    /// **System F** — Type abstraction: `Λα. e`.
-    /// Introduces a rigid type variable `α`; the whole expression has type `∀α. T(e)`.
-    TyLam { ty_param: String, body: Box<Expr> },
-    /// **System F** — Type application: `e [τ]`.
-    /// Requires `e : ∀α. σ`; result type is `σ[τ/α]`.
-    TyApp { expr: Box<Expr>, ty: Box<Type> },
-    /// Let binding with generalization: `let name [: ann] = value in body`.
-    /// The inferred (or annotated) type of `value` is *generalized* over free unification
-    /// variables not present in the surrounding environment, yielding a polytype.
+    /// System F — type abstraction: `Λα. e`. Produces `∀α. T(e)`.
+    TyLam {
+        ty_param: String,
+        body: Box<Expr>,
+    },
+    /// System F — type application: `e [τ]`. Requires `e : ∀α. σ`.
+    TyApp {
+        expr: Box<Expr>,
+        ty: Box<Type>,
+    },
+    /// Let with generalization (inside expressions).
     Let {
         name: String,
         ann: Option<Type>,
         value: Box<Expr>,
         body: Box<Expr>,
     },
-    /// Type ascription / annotation: `(e : τ)`.
-    /// Checks that `e` has type `τ`.
-    Annot { expr: Box<Expr>, ty: Type },
+    /// Type ascription: `(e : τ)`.
+    Annot {
+        expr: Box<Expr>,
+        ty: Type,
+    },
 }
 
-// ==================== Type Environment ====================
+// ==============================================================================
+// Type Environment
+// ==============================================================================
 
 #[derive(Clone, Debug)]
 pub struct TypeEnv {
@@ -234,7 +583,6 @@ impl TypeEnv {
         }
     }
 
-    /// Extend the environment with a new child scope.
     pub fn extend(parent: TypeEnv) -> Self {
         Self {
             bindings: HashMap::new(),
@@ -253,7 +601,6 @@ impl TypeEnv {
             .or_else(|| self.parent.as_ref().and_then(|p| p.get(name)))
     }
 
-    /// All types bound in any scope (used to compute free unification vars in env).
     fn all_types(&self) -> Vec<Type> {
         let mut ts: Vec<Type> = self.bindings.values().cloned().collect();
         if let Some(p) = &self.parent {
@@ -269,19 +616,15 @@ impl Default for TypeEnv {
     }
 }
 
-// ==================== Inference State ====================
+// ==============================================================================
+// Inference State
+// ==============================================================================
 
-/// Mutable state threaded through type inference.
 struct InferState {
-    /// Counter for fresh unification variables.
     next_var: usize,
-    /// Counter for fresh Skolem names (used when unifying `∀` types).
     next_skolem: usize,
-    /// Counter for fresh generalization names (a, b, …, a1, b1, …).
     next_gen: usize,
-    /// Substitution map: `Var(id)` ↦ `Type`.
     subs: HashMap<usize, Type>,
-    /// Deferred unification constraints.
     constraints: Vec<(Type, Type)>,
 }
 
@@ -295,8 +638,6 @@ impl InferState {
             constraints: Vec::new(),
         }
     }
-
-    // ---- Fresh variable factories ----
 
     fn fresh_var(&mut self) -> Type {
         let id = self.next_var;
@@ -325,102 +666,84 @@ impl InferState {
         self.constraints.push((t1, t2));
     }
 
-    // ---- Substitution application ----
-
-    /// Walk a type through the current substitution map (follows chains).
     fn apply_subs(&self, ty: &Type) -> Type {
         match ty {
-            Type::Var(id) => {
-                if let Some(sub) = self.subs.get(id) {
-                    self.apply_subs(sub) // follow chains
-                } else {
-                    ty.clone()
-                }
-            }
+            Type::Var(id) => self
+                .subs
+                .get(id)
+                .map(|s| self.apply_subs(s))
+                .unwrap_or_else(|| ty.clone()),
             Type::Arrow(p, r) => {
                 Type::Arrow(Box::new(self.apply_subs(p)), Box::new(self.apply_subs(r)))
             }
             Type::App(t1, t2) => {
                 Type::App(Box::new(self.apply_subs(t1)), Box::new(self.apply_subs(t2)))
             }
-            Type::Forall(v, body) => Type::Forall(v.clone(), Box::new(self.apply_subs(body))),
+            Type::Forall(v, b) => Type::Forall(v.clone(), Box::new(self.apply_subs(b))),
+            Type::TyAbs { param, kind, body } => Type::TyAbs {
+                param: param.clone(),
+                kind: kind.clone(),
+                body: Box::new(self.apply_subs(body)),
+            },
             _ => ty.clone(),
         }
     }
 
-    // ---- Instantiation ----
-
-    /// Replace all leading `∀`-bound variables with fresh unification vars.
-    ///
-    /// `∀a. ∀b. a → b`  →  `?n → ?m`
+    /// Replace all leading `∀` binders with fresh unification variables.
     fn instantiate(&mut self, ty: &Type) -> Type {
         match ty {
             Type::Forall(var, body) => {
                 let fresh = self.fresh_var();
-                let inner = body.subst_ty(var, &fresh);
-                self.instantiate(&inner)
+                self.instantiate(&body.subst_ty(var, &fresh))
             }
             _ => ty.clone(),
         }
     }
 
-    // ---- Generalization ----
-
-    /// Close a type over all free unification variables *not* present in the environment.
-    ///
-    /// Concretely: replaces each `Var(id)` not in `env_free` with a fresh named `TyVar`,
-    /// then wraps the type in `∀` binders for each such variable.
+    /// Close a type over unification variables not free in the environment.
     fn generalize(&mut self, ty: &Type, env_free: &HashSet<usize>) -> Type {
         let ty = self.apply_subs(ty);
-
-        // Free unification variables in `ty` that are not free in the env.
         let mut to_gen: Vec<usize> = ty.free_unif_vars().difference(env_free).copied().collect();
-        to_gen.sort(); // deterministic ordering
-
+        to_gen.sort();
         if to_gen.is_empty() {
             return ty;
         }
 
-        // Assign a fresh name to each variable being generalized.
         let assignments: Vec<(usize, String)> = to_gen
             .iter()
             .map(|&id| (id, self.fresh_gen_name()))
             .collect();
-
-        // 1. Replace all Var(id) → TyVar(name) in the type.
         let mut result = ty;
         for (var_id, name) in &assignments {
-            result = Self::replace_unif_var_with(result, *var_id, &Type::TyVar(name.clone()));
+            result = Self::replace_unif_var(result, *var_id, &Type::TyVar(name.clone()));
         }
-
-        // 2. Wrap in ∀ binders, outermost = lowest id (reversed iteration).
         for (_, name) in assignments.iter().rev() {
             result = Type::Forall(name.clone(), Box::new(result));
         }
-
         result
     }
 
-    fn replace_unif_var_with(ty: Type, id: usize, replacement: &Type) -> Type {
+    fn replace_unif_var(ty: Type, id: usize, rep: &Type) -> Type {
         match ty {
-            Type::Var(vid) if vid == id => replacement.clone(),
+            Type::Var(vid) if vid == id => rep.clone(),
             Type::Var(_) | Type::Con(_) | Type::TyVar(_) => ty,
             Type::Arrow(p, r) => Type::Arrow(
-                Box::new(Self::replace_unif_var_with(*p, id, replacement)),
-                Box::new(Self::replace_unif_var_with(*r, id, replacement)),
+                Box::new(Self::replace_unif_var(*p, id, rep)),
+                Box::new(Self::replace_unif_var(*r, id, rep)),
             ),
             Type::App(t1, t2) => Type::App(
-                Box::new(Self::replace_unif_var_with(*t1, id, replacement)),
-                Box::new(Self::replace_unif_var_with(*t2, id, replacement)),
+                Box::new(Self::replace_unif_var(*t1, id, rep)),
+                Box::new(Self::replace_unif_var(*t2, id, rep)),
             ),
-            Type::Forall(v, body) => Type::Forall(
-                v,
-                Box::new(Self::replace_unif_var_with(*body, id, replacement)),
-            ),
+            Type::Forall(v, b) => Type::Forall(v, Box::new(Self::replace_unif_var(*b, id, rep))),
+            Type::TyAbs { param, kind, body } => Type::TyAbs {
+                param,
+                kind,
+                body: Box::new(Self::replace_unif_var(*body, id, rep)),
+            },
         }
     }
 
-    /// Free unification variables across the entire type environment.
     fn env_free_unif_vars(&self, env: &TypeEnv) -> HashSet<usize> {
         env.all_types()
             .iter()
@@ -428,69 +751,66 @@ impl InferState {
             .collect()
     }
 
-    // ==================== Unification ====================
+    // ── Unification ──────────────────────────────────────────────────────────
 
     fn unify(&mut self, t1: &Type, t2: &Type) -> Result<(), String> {
-        let t1 = self.apply_subs(t1);
-        let t2 = self.apply_subs(t2);
+        // Apply substitutions and beta-normalize before comparing.
+        let t1 = self.apply_subs(t1).normalize();
+        let t2 = self.apply_subs(t2).normalize();
 
         match (&t1, &t2) {
-            // ── Identical type constants ──────────────────────────────────────
             (Type::Con(a), Type::Con(b)) if a == b => Ok(()),
 
-            // ── Identical rigid type variables ────────────────────────────────
             (Type::TyVar(a), Type::TyVar(b)) if a == b => Ok(()),
-
-            // ── Two *different* rigid type variables cannot be unified ─────────
-            // (skolem variables introduced during Forall-unification also live here)
             (Type::TyVar(a), Type::TyVar(b)) => Err(format!(
                 "Cannot unify rigid type variables '{}' and '{}'",
                 a, b
             )),
 
-            // ── Unification variable on left ──────────────────────────────────
-            (Type::Var(id), _) => {
-                let id = *id;
-                let rhs = t2.clone();
-                self.bind_var(id, &rhs)
-            }
+            (Type::Var(id), _) => self.bind_var(*id, &t2),
+            (_, Type::Var(id)) => self.bind_var(*id, &t1),
 
-            // ── Unification variable on right ─────────────────────────────────
-            (_, Type::Var(id)) => {
-                let id = *id;
-                let lhs = t1.clone();
-                self.bind_var(id, &lhs)
-            }
-
-            // ── Arrow: unify component-wise ───────────────────────────────────
             (Type::Arrow(p1, r1), Type::Arrow(p2, r2)) => {
                 let (p1, r1, p2, r2) = (p1.clone(), r1.clone(), p2.clone(), r2.clone());
                 self.unify(&p1, &p2)?;
                 self.unify(&r1, &r2)
             }
 
-            // ── Type application: unify component-wise ────────────────────────
             (Type::App(f1, a1), Type::App(f2, a2)) => {
                 let (f1, a1, f2, a2) = (f1.clone(), a1.clone(), f2.clone(), a2.clone());
                 self.unify(&f1, &f2)?;
                 self.unify(&a1, &a2)
             }
 
-            // ── Forall: unify under a fresh Skolem variable ───────────────────
-            //
-            // `∀α. τ₁ ≡ ∀β. τ₂`  iff  `τ₁[$s/α] ≡ τ₂[$s/β]`  for fresh Skolem `$s`.
-            //
-            // The Skolem is rigid (TyVar starting with '$s'), so if any unification
-            // variable attempts to escape its scope by unifying with the Skolem,
-            // the rigid-variable mismatch rule above will catch it.
+            // ∀: unify bodies under a fresh Skolem.
             (Type::Forall(a, b1), Type::Forall(b, b2)) => {
-                let skolem = self.fresh_skolem();
-                let body1 = b1.subst_ty(a, &skolem);
-                let body2 = b2.subst_ty(b, &skolem);
-                self.unify(&body1, &body2)
+                let sk = self.fresh_skolem();
+                self.unify(&b1.subst_ty(a, &sk), &b2.subst_ty(b, &sk))
             }
 
-            // ── Everything else is a type mismatch ───────────────────────────
+            // Λ: kinds must match, then unify bodies under a fresh Skolem.
+            (
+                Type::TyAbs {
+                    param: p1,
+                    kind: k1,
+                    body: b1,
+                },
+                Type::TyAbs {
+                    param: p2,
+                    kind: k2,
+                    body: b2,
+                },
+            ) => {
+                if k1 != k2 {
+                    return Err(format!(
+                        "Kind mismatch in TyAbs unification: {} vs {}",
+                        k1, k2
+                    ));
+                }
+                let sk = self.fresh_skolem();
+                self.unify(&b1.subst_ty(p1, &sk), &b2.subst_ty(p2, &sk))
+            }
+
             _ => Err(format!(
                 "Type mismatch: cannot unify\n    {}\nwith\n    {}",
                 t1, t2
@@ -499,26 +819,17 @@ impl InferState {
     }
 
     fn bind_var(&mut self, id: usize, ty: &Type) -> Result<(), String> {
-        // Trivial: binding a var to itself.
         if let Type::Var(other) = ty {
             if *other == id {
                 return Ok(());
             }
         }
-
-        // If we already have a substitution, unify against it.
         if let Some(existing) = self.subs.get(&id).cloned() {
             return self.unify(&existing, ty);
         }
-
-        // Occurs check: prevents infinite/recursive types.
         if self.occurs_in(id, ty) {
-            return Err(format!(
-                "Occurs check failed: type variable ?{} occurs in {}",
-                id, ty
-            ));
+            return Err(format!("Occurs check: ?{} occurs in {}", id, ty));
         }
-
         self.subs.insert(id, ty.clone());
         Ok(())
     }
@@ -529,16 +840,14 @@ impl InferState {
                 if *other == id {
                     return true;
                 }
-                // Follow substitution chains.
-                if let Some(sub) = self.subs.get(other) {
-                    self.occurs_in(id, &sub.clone())
-                } else {
-                    false
-                }
+                self.subs
+                    .get(other)
+                    .map(|s| self.occurs_in(id, &s.clone()))
+                    .unwrap_or(false)
             }
             Type::Arrow(p, r) => self.occurs_in(id, p) || self.occurs_in(id, r),
             Type::App(t1, t2) => self.occurs_in(id, t1) || self.occurs_in(id, t2),
-            Type::Forall(_, body) => self.occurs_in(id, body),
+            Type::Forall(_, b) | Type::TyAbs { body: b, .. } => self.occurs_in(id, b),
             _ => false,
         }
     }
@@ -551,35 +860,46 @@ impl InferState {
     }
 }
 
-// ==================== Type Checker ====================
+// ==============================================================================
+// Type Checker
+// ==============================================================================
 
 pub struct TypeChecker {
     pub env: TypeEnv,
+    pub registry: TypeRegistry,
 }
 
 impl TypeChecker {
     pub fn new() -> Self {
         Self {
             env: TypeEnv::new(),
+            registry: TypeRegistry::new(),
         }
     }
 
-    pub fn with_env(env: TypeEnv) -> Self {
-        Self { env }
-    }
-
-    /// Register a global binding (builtins, primitives, etc.).
     pub fn define(&mut self, name: impl Into<String>, ty: Type) {
         self.env.insert(name.into(), ty);
     }
 
-    // ==================== Core Inference ====================
+    pub fn kind_of(&self, ty: &Type) -> Result<Kind, String> {
+        self.registry.kind_of(ty, &KindEnv::new())
+    }
 
-    fn infer(expr: &Expr, env: &TypeEnv, state: &mut InferState) -> Result<Type, String> {
+    // ── Core inference ────────────────────────────────────────────────────────
+    //
+    // `kenv` grows when entering `TyLam` — it carries the kind of each type
+    // parameter in scope so that type annotations referencing them kind-check.
+
+    fn infer(
+        expr: &Expr,
+        env: &TypeEnv,
+        state: &mut InferState,
+        reg: &TypeRegistry,
+        kenv: &KindEnv,
+    ) -> Result<Type, String> {
         match expr {
             Expr::Literal(lit) => Self::infer_literal(lit),
 
-            // Variable: look up and *instantiate* any ∀ binders.
             Expr::Ident(name) => {
                 let ty = env
                     .get(name)
@@ -591,73 +911,49 @@ impl TypeChecker {
                 params,
                 body,
                 return_type,
-            } => Self::infer_lambda(params, body, return_type, env, state),
+            } => Self::infer_lambda(params, body, return_type, env, state, reg, kenv),
 
-            Expr::Call { callee, params } => Self::infer_call(callee, params, env, state),
+            Expr::Call { callee, params } => {
+                Self::infer_call(callee, params, env, state, reg, kenv)
+            }
 
             Expr::If {
                 condition,
                 then_branch,
                 else_branch,
-            } => Self::infer_if(condition, then_branch, else_branch, env, state),
+            } => Self::infer_if(condition, then_branch, else_branch, env, state, reg, kenv),
 
-            // ── System F: Type abstraction  Λα. e ─────────────────────────────
-            //
-            // Inference rule:
-            //   Γ ⊢ e : τ   (α rigid in τ, not free in Γ)
-            //   ───────────────────────────────────────────
-            //   Γ ⊢ Λα. e : ∀α. τ
-            //
-            // Because `α` is represented as `Type::TyVar("α")` everywhere inside `e`'s
-            // annotations, and TyVars are rigid (not unifiable), the inference naturally
-            // treats it as a fixed, abstract type.
+            // Λα. e — bind α in kenv (kind *), infer body, wrap result in ∀.
             Expr::TyLam { ty_param, body } => {
-                let body_ty = Self::infer(body, env, state)?;
+                let ext = kenv.extend(ty_param.clone(), Kind::Star);
+                let body_ty = Self::infer(body, env, state, reg, &ext)?;
                 let body_ty = state.apply_subs(&body_ty);
                 Ok(Type::Forall(ty_param.clone(), Box::new(body_ty)))
             }
 
-            // ── System F: Type application  e [τ] ────────────────────────────
-            //
-            // Inference rule:
-            //   Γ ⊢ e : ∀α. σ
-            //   ────────────────────────────
-            //   Γ ⊢ e [τ] : σ[τ/α]
-            //
-            // Requires the expression to have a *syntactic* Forall type after substitution.
-            // If the type is still an unresolved unification variable, that's a type error —
-            // in System F, type applications must be explicit and unambiguous.
+            // e [τ] — type application.
             Expr::TyApp { expr, ty } => {
-                let expr_ty = Self::infer(expr, env, state)?;
-                let expr_ty = state.apply_subs(&expr_ty);
-                match expr_ty {
-                    Type::Forall(var, body) => Ok(body.subst_ty(&var, ty)),
-                    other => Err(format!(
-                        "Type application requires a polymorphic type (∀α. τ),\n\
-                         but the expression has type: {}",
-                        other
-                    )),
+                reg.kind_of(ty, kenv)
+                    .map_err(|e| format!("In type-application argument: {}", e))?;
+                let expr_ty = Self::infer(expr, env, state, reg, kenv)?;
+                match state.apply_subs(&expr_ty).normalize() {
+                    Type::Forall(var, body) => Ok(body.subst_ty(&var, ty).normalize()),
+                    other => Err(format!("Type application requires ∀α. τ, got: {}", other)),
                 }
             }
 
-            // ── Let binding with generalization ───────────────────────────────
-            //
-            // let x = e₁ in e₂
-            //
-            // 1. Infer (or check against annotation) e₁ : τ
-            // 2. Solve constraints generated for e₁ in isolation
-            // 3. Generalize τ over vars not free in Γ → σ
-            // 4. Type e₂ in Γ, x : σ
             Expr::Let {
                 name,
                 ann,
                 value,
                 body,
-            } => Self::infer_let(name, ann.as_ref(), value, body, env, state),
+            } => Self::infer_let(name, ann.as_ref(), value, body, env, state, reg, kenv),
 
-            // ── Type ascription  (e : τ) ──────────────────────────────────────
+            // (e : τ) — ascription.
             Expr::Annot { expr, ty } => {
-                let inferred = Self::infer(expr, env, state)?;
+                reg.check_kind(ty, &Kind::Star, kenv)
+                    .map_err(|e| format!("In type annotation: {}", e))?;
+                let inferred = Self::infer(expr, env, state, reg, kenv)?;
                 state.push_constraint(inferred, ty.clone());
                 Ok(ty.clone())
             }
@@ -681,30 +977,37 @@ impl TypeChecker {
         return_type: &Option<Type>,
         env: &TypeEnv,
         state: &mut InferState,
+        reg: &TypeRegistry,
+        kenv: &KindEnv,
     ) -> Result<Type, String> {
         let mut new_env = TypeEnv::extend(env.clone());
 
-        let param_types: Vec<Type> = params
+        let param_tys = params
             .iter()
             .map(|(name, ann)| {
-                let ty = ann.clone().unwrap_or_else(|| state.fresh_var());
+                let ty = if let Some(ann_ty) = ann {
+                    reg.check_kind(ann_ty, &Kind::Star, kenv)
+                        .map_err(|e| format!("Parameter '{}': {}", name, e))?;
+                    ann_ty.clone()
+                } else {
+                    state.fresh_var()
+                };
                 new_env.insert(name.clone(), ty.clone());
-                ty
+                Ok(ty)
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
 
-        let body_ty = Self::infer(body, &new_env, state)?;
+        let body_ty = Self::infer(body, &new_env, state, reg, kenv)?;
 
-        if let Some(ret_ann) = return_type {
-            state.push_constraint(body_ty.clone(), ret_ann.clone());
+        if let Some(ret) = return_type {
+            reg.check_kind(ret, &Kind::Star, kenv)
+                .map_err(|e| format!("Return type annotation: {}", e))?;
+            state.push_constraint(body_ty.clone(), ret.clone());
         }
 
-        // Build curried arrow: p₁ → p₂ → … → body
-        let func_ty = param_types.into_iter().rfold(body_ty, |ret, param| {
-            Type::Arrow(Box::new(param), Box::new(ret))
-        });
-
-        Ok(func_ty)
+        Ok(param_tys
+            .into_iter()
+            .rfold(body_ty, |ret, p| Type::Arrow(Box::new(p), Box::new(ret))))
     }
 
     fn infer_call(
@@ -712,19 +1015,20 @@ impl TypeChecker {
         params: &[Expr],
         env: &TypeEnv,
         state: &mut InferState,
+        reg: &TypeRegistry,
+        kenv: &KindEnv,
     ) -> Result<Type, String> {
-        let callee_ty = Self::infer(callee, env, state)?;
-        let mut current_ty = callee_ty;
-
+        let mut cur = Self::infer(callee, env, state, reg, kenv)?;
         for param in params {
-            let param_ty = Self::infer(param, env, state)?;
+            let param_ty = Self::infer(param, env, state, reg, kenv)?;
             let ret_ty = state.fresh_var();
-            let arrow = Type::Arrow(Box::new(param_ty), Box::new(ret_ty.clone()));
-            state.push_constraint(current_ty, arrow);
-            current_ty = ret_ty;
+            state.push_constraint(
+                cur,
+                Type::Arrow(Box::new(param_ty), Box::new(ret_ty.clone())),
+            );
+            cur = ret_ty;
         }
-
-        Ok(current_ty)
+        Ok(cur)
     }
 
     fn infer_if(
@@ -733,14 +1037,14 @@ impl TypeChecker {
         else_branch: &Expr,
         env: &TypeEnv,
         state: &mut InferState,
+        reg: &TypeRegistry,
+        kenv: &KindEnv,
     ) -> Result<Type, String> {
-        let cond_ty = Self::infer(condition, env, state)?;
+        let cond_ty = Self::infer(condition, env, state, reg, kenv)?;
         state.push_constraint(cond_ty, Type::bool());
-
-        let then_ty = Self::infer(then_branch, env, state)?;
-        let else_ty = Self::infer(else_branch, env, state)?;
+        let then_ty = Self::infer(then_branch, env, state, reg, kenv)?;
+        let else_ty = Self::infer(else_branch, env, state, reg, kenv)?;
         state.push_constraint(then_ty.clone(), else_ty);
-
         Ok(then_ty)
     }
 
@@ -751,66 +1055,46 @@ impl TypeChecker {
         body: &Expr,
         env: &TypeEnv,
         state: &mut InferState,
+        reg: &TypeRegistry,
+        kenv: &KindEnv,
     ) -> Result<Type, String> {
-        // Isolate value inference: save outer constraints so we only solve
-        // the constraints that belong to the `value` expression, enabling
-        // clean generalization.
-        let outer_constraints = take(&mut state.constraints);
+        let outer = take(&mut state.constraints);
 
         let poly_ty = if let Some(ann_ty) = ann {
-            // Annotation provided (possibly a polytype like ∀a. a → a).
-            //
-            // We must NOT push `inferred ~ ann_ty` directly, because that would
-            // try to unify a monotype (e.g. `?0 → ?0`) with a `∀`-type, which
-            // the unifier rightly rejects.
-            //
-            // Correct approach:
-            //   1. *Instantiate* the annotation — replace leading ∀ binders with
-            //      fresh unification variables — producing a checkable monotype.
-            //   2. Constrain the inferred type against that instantiated monotype.
-            //   3. Solve and verify the constraint.
-            //   4. Store the *original annotation polytype* in the env unchanged —
-            //      it is already the most general type for this binding.
+            reg.check_kind(ann_ty, &Kind::Star, kenv)
+                .map_err(|e| format!("In let annotation for '{}': {}", name, e))?;
+            // Instantiate the annotation before constraining (fixes the
+            // `∀a. a → a  ~  ?0 → ?0` mismatch from the λ2 version).
             let inst = state.instantiate(ann_ty);
-            let inferred = Self::infer(value, env, state)?;
+            let inferred = Self::infer(value, env, state, reg, kenv)?;
             state.push_constraint(inferred, inst);
             state.solve_constraints()?;
-            // The annotation is already a polytype; no need to generalize again.
             ann_ty.clone()
         } else {
-            // No annotation: infer, solve, then generalize over unconstrained vars.
-            let inferred = Self::infer(value, env, state)?;
+            let inferred = Self::infer(value, env, state, reg, kenv)?;
             state.solve_constraints()?;
-
-            // Compute free unification vars in the surrounding env.
-            // Those must NOT be generalized — they are monomorphic in context.
             let env_free = state.env_free_unif_vars(env);
             state.generalize(&inferred, &env_free)
         };
 
-        // Restore outer constraints before continuing into the body.
-        state.constraints = outer_constraints;
-
+        state.constraints = outer;
         let mut new_env = TypeEnv::extend(env.clone());
         new_env.insert(name.to_string(), poly_ty);
-
-        Self::infer(body, &new_env, state)
+        Self::infer(body, &new_env, state, reg, kenv)
     }
 
-    // ==================== Public API ====================
+    // ── Public API ────────────────────────────────────────────────────────────
 
-    /// Infer the type of an expression from scratch.
     pub fn type_of(&self, expr: &Expr) -> Result<Type, String> {
         let mut state = InferState::new();
-        let ty = Self::infer(expr, &self.env, &mut state)?;
+        let ty = Self::infer(expr, &self.env, &mut state, &self.registry, &KindEnv::new())?;
         state.solve_constraints()?;
         Ok(state.apply_subs(&ty))
     }
 
-    /// Check that an expression has the given type.
     pub fn check(&self, expr: &Expr, expected: &Type) -> Result<(), String> {
         let mut state = InferState::new();
-        let actual = Self::infer(expr, &self.env, &mut state)?;
+        let actual = Self::infer(expr, &self.env, &mut state, &self.registry, &KindEnv::new())?;
         state.push_constraint(actual, expected.clone());
         state.solve_constraints()
     }
@@ -823,7 +1107,202 @@ impl Default for TypeChecker {
 }
 
 // ==============================================================================
-//  Tests — original suite (should all still pass)
+// Statement
+// ==============================================================================
+
+/// A top-level declaration.
+pub enum Statement {
+    /// `let name [: ann] = value`
+    ///
+    /// The value expression is type-checked in the current environment. The
+    /// resulting (possibly generalised) type is added for subsequent statements.
+    Let {
+        name: String,
+        ann: Option<Type>,
+        value: Expr,
+    },
+    /// `type Name a b … = Ctor₁ T… | Ctor₂ T… | …`
+    ///
+    /// * Registers the ADT in `TypeRegistry`.
+    /// * Injects each constructor's polytype into the value `TypeEnv`.
+    ///
+    /// Field types may use `Con("a")` for type parameters — `resolve_type` is
+    /// applied automatically with the declared parameter names as the bound set.
+    Type {
+        name: String,
+        params: Vec<String>,
+        constructors: Vec<(String, Vec<Type>)>,
+    },
+}
+
+// ==============================================================================
+// Interpreter
+// ==============================================================================
+
+/// Processes a sequence of top-level `Statement`s, growing the registry and
+/// value environment incrementally.
+pub struct Interpreter {
+    pub checker: TypeChecker,
+}
+
+impl Interpreter {
+    pub fn new() -> Self {
+        Self {
+            checker: TypeChecker::new(),
+        }
+    }
+
+    pub fn process(&mut self, stmt: Statement) -> Result<(), String> {
+        match stmt {
+            Statement::Type {
+                name,
+                params,
+                constructors,
+            } => self.process_type(name, params, constructors),
+            Statement::Let { name, ann, value } => self.process_let(name, ann, value),
+        }
+    }
+
+    fn process_type(
+        &mut self,
+        name: String,
+        params: Vec<String>,
+        constructors: Vec<(String, Vec<Type>)>,
+    ) -> Result<(), String> {
+        // Param names must be distinct.
+        let mut seen = HashSet::new();
+        for p in &params {
+            if !seen.insert(p.clone()) {
+                return Err(format!(
+                    "Duplicate type parameter '{}' in type '{}'",
+                    p, name
+                ));
+            }
+        }
+
+        // Kind env for checking field types: each param has kind *.
+        let kenv = params
+            .iter()
+            .fold(KindEnv::new(), |e, p| e.extend(p.clone(), Kind::Star));
+        // Bound set for resolve_type.
+        let bound: HashSet<String> = params.iter().cloned().collect();
+
+        // Resolve and kind-check constructor field types.
+        let resolved_ctors = constructors
+            .into_iter()
+            .map(|(ctor_name, fields)| {
+                let resolved_fields = fields
+                    .into_iter()
+                    .map(|field| {
+                        let resolved = resolve_type(field, &bound);
+                        if let Err(err) = self
+                            .checker
+                            .registry
+                            .check_kind(&resolved, &Kind::Star, &kenv)
+                            .map_err(|e| {
+                                format!("Constructor '{}' of type '{}': {}", ctor_name, name, e)
+                            })
+                        {
+                            return Err(err);
+                        }
+                        Ok(resolved)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((ctor_name, resolved_fields))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        // Register the ADT.
+        self.checker.registry.register(
+            name.clone(),
+            TypeDecl::Adt {
+                params: params.clone(),
+                constructors: resolved_ctors.clone(),
+            },
+        );
+
+        // Inject constructor polytypes into the value environment.
+        for (ctor_name, fields) in &resolved_ctors {
+            let ctor_ty = TypeRegistry::synthesize_ctor_type(&name, &params, fields);
+            self.checker.env.insert(ctor_name.clone(), ctor_ty);
+        }
+
+        Ok(())
+    }
+
+    fn process_let(&mut self, name: String, ann: Option<Type>, value: Expr) -> Result<(), String> {
+        // Resolve and kind-check annotation if provided.
+        let ann = ann
+            .map(|ty| {
+                let resolved = resolve_type(ty, &HashSet::new());
+                if let Err(err) = self
+                    .checker
+                    .registry
+                    .check_kind(&resolved, &Kind::Star, &KindEnv::new())
+                    .map_err(|e| format!("Annotation for '{}': {}", name, e))
+                {
+                    return Err(err);
+                }
+                Ok(resolved)
+            })
+            .transpose()?;
+
+        let mut state = InferState::new();
+        let outer = take(&mut state.constraints);
+
+        let poly_ty = if let Some(ref ann_ty) = ann {
+            let inst = state.instantiate(ann_ty);
+            let inferred = TypeChecker::infer(
+                &value,
+                &self.checker.env,
+                &mut state,
+                &self.checker.registry,
+                &KindEnv::new(),
+            )?;
+            state.push_constraint(inferred, inst);
+            state.solve_constraints()?;
+            ann_ty.clone()
+        } else {
+            let inferred = TypeChecker::infer(
+                &value,
+                &self.checker.env,
+                &mut state,
+                &self.checker.registry,
+                &KindEnv::new(),
+            )?;
+            state.solve_constraints()?;
+            let env_free = state.env_free_unif_vars(&self.checker.env);
+            state.generalize(&inferred, &env_free)
+        };
+
+        state.constraints = outer;
+        self.checker.env.insert(name, poly_ty);
+        Ok(())
+    }
+
+    // ── Query helpers ─────────────────────────────────────────────────────────
+
+    pub fn type_of(&self, expr: &Expr) -> Result<Type, String> {
+        self.checker.type_of(expr)
+    }
+
+    pub fn kind_of(&self, ty: &Type) -> Result<Kind, String> {
+        self.checker.kind_of(ty)
+    }
+
+    pub fn type_of_name(&self, name: &str) -> Option<Type> {
+        self.checker.env.get(name)
+    }
+}
+
+impl Default for Interpreter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ==============================================================================
+// Tests — λ2 suite (all should pass unchanged)
 // ==============================================================================
 
 #[cfg(test)]
@@ -832,57 +1311,53 @@ mod tests {
 
     #[test]
     fn test_literal_types() {
-        let checker = TypeChecker::new();
+        let c = TypeChecker::new();
         assert_eq!(
-            checker.type_of(&Expr::Literal(Literal::Int(42))).unwrap(),
+            c.type_of(&Expr::Literal(Literal::Int(42))).unwrap(),
             Type::int()
         );
         assert_eq!(
-            checker
-                .type_of(&Expr::Literal(Literal::Bool(true)))
-                .unwrap(),
+            c.type_of(&Expr::Literal(Literal::Bool(true))).unwrap(),
             Type::bool()
         );
         assert_eq!(
-            checker.type_of(&Expr::Literal(Literal::Unit)).unwrap(),
+            c.type_of(&Expr::Literal(Literal::Unit)).unwrap(),
             Type::unit()
         );
     }
 
     #[test]
     fn test_identity_function() {
-        let checker = TypeChecker::new();
-        let id_func = Expr::Lambda {
+        let c = TypeChecker::new();
+        let id = Expr::Lambda {
             params: vec![("x".to_string(), None)],
             body: Box::new(Expr::Ident("x".to_string())),
             return_type: None,
         };
-        let ty = checker.type_of(&id_func).unwrap();
-        if let Type::Arrow(left, right) = &ty {
-            assert_eq!(left, right, "identity function should have type α → α");
+        if let Type::Arrow(l, r) = c.type_of(&id).unwrap() {
+            assert_eq!(l, r);
         } else {
-            panic!("Expected arrow type, got {:?}", ty);
+            panic!("Expected arrow type");
         }
     }
 
     #[test]
-    fn test_annotated_identity_function() {
-        let checker = TypeChecker::new();
-        let id_func = Expr::Lambda {
+    fn test_annotated_identity() {
+        let c = TypeChecker::new();
+        let id = Expr::Lambda {
             params: vec![("x".to_string(), Some(Type::int()))],
             body: Box::new(Expr::Ident("x".to_string())),
             return_type: Some(Type::int()),
         };
-        let ty = checker.type_of(&id_func).unwrap();
         assert_eq!(
-            ty,
-            Type::Arrow(Box::new(Type::int()), Box::new(Type::int()))
+            c.type_of(&id).unwrap(),
+            Type::arrow(Type::int(), Type::int())
         );
     }
 
     #[test]
     fn test_function_application() {
-        let checker = TypeChecker::new();
+        let c = TypeChecker::new();
         let app = Expr::Call {
             callee: Box::new(Expr::Lambda {
                 params: vec![("x".to_string(), Some(Type::int()))],
@@ -891,32 +1366,32 @@ mod tests {
             }),
             params: vec![Expr::Literal(Literal::Int(42))],
         };
-        assert_eq!(checker.type_of(&app).unwrap(), Type::int());
+        assert_eq!(c.type_of(&app).unwrap(), Type::int());
     }
 
     #[test]
-    fn test_conditional_expression() {
-        let checker = TypeChecker::new();
-        let if_expr = Expr::If {
+    fn test_conditional() {
+        let c = TypeChecker::new();
+        let e = Expr::If {
             condition: Box::new(Expr::Literal(Literal::Bool(true))),
             then_branch: Box::new(Expr::Literal(Literal::Int(1))),
             else_branch: Box::new(Expr::Literal(Literal::Int(2))),
         };
-        assert_eq!(checker.type_of(&if_expr).unwrap(), Type::int());
+        assert_eq!(c.type_of(&e).unwrap(), Type::int());
     }
 
     #[test]
     fn test_type_checking() {
-        let checker = TypeChecker::new();
-        let expr = Expr::Literal(Literal::Int(42));
-        assert!(checker.check(&expr, &Type::int()).is_ok());
-        assert!(checker.check(&expr, &Type::bool()).is_err());
+        let c = TypeChecker::new();
+        let e = Expr::Literal(Literal::Int(42));
+        assert!(c.check(&e, &Type::int()).is_ok());
+        assert!(c.check(&e, &Type::bool()).is_err());
     }
 
     #[test]
-    fn test_type_mismatch_error() {
-        let checker = TypeChecker::new();
-        let bad_app = Expr::Call {
+    fn test_type_mismatch() {
+        let c = TypeChecker::new();
+        let e = Expr::Call {
             callee: Box::new(Expr::Lambda {
                 params: vec![("x".to_string(), Some(Type::int()))],
                 body: Box::new(Expr::Ident("x".to_string())),
@@ -924,26 +1399,45 @@ mod tests {
             }),
             params: vec![Expr::Literal(Literal::Bool(true))],
         };
-        assert!(checker.type_of(&bad_app).is_err());
+        assert!(c.type_of(&e).is_err());
     }
 
     #[test]
-    fn test_unbound_variable_error() {
-        let checker = TypeChecker::new();
-        let unbound = Expr::Ident("nonexistent".to_string());
-        assert!(checker.type_of(&unbound).is_err());
+    fn test_unbound_variable() {
+        let c = TypeChecker::new();
+        assert!(c.type_of(&Expr::Ident("nope".to_string())).is_err());
     }
-}
 
-#[cfg(test)]
-mod integration_tests {
-    use super::*;
+    #[test]
+    fn test_branch_mismatch() {
+        let c = TypeChecker::new();
+        let e = Expr::If {
+            condition: Box::new(Expr::Literal(Literal::Bool(true))),
+            then_branch: Box::new(Expr::Literal(Literal::Int(1))),
+            else_branch: Box::new(Expr::Literal(Literal::Bool(false))),
+        };
+        assert!(c.type_of(&e).is_err());
+    }
+
+    #[test]
+    fn test_occurs_check() {
+        let c = TypeChecker::new();
+        let omega = Expr::Lambda {
+            params: vec![("x".to_string(), None)],
+            body: Box::new(Expr::Call {
+                callee: Box::new(Expr::Ident("x".to_string())),
+                params: vec![Expr::Ident("x".to_string())],
+            }),
+            return_type: None,
+        };
+        assert!(c.type_of(&omega).is_err());
+    }
 
     #[test]
     fn test_nested_lambdas() {
-        let checker = TypeChecker::new();
-        // λa. λb. a  (K combinator)
-        let nested = Expr::Lambda {
+        let c = TypeChecker::new();
+        // K combinator: λa. λb. a
+        let k = Expr::Lambda {
             params: vec![("a".to_string(), None)],
             body: Box::new(Expr::Lambda {
                 params: vec![("b".to_string(), None)],
@@ -952,117 +1446,23 @@ mod integration_tests {
             }),
             return_type: None,
         };
-        let result = checker.type_of(&nested);
-        assert!(result.is_ok(), "K combinator should type-check");
-        // Should be α → β → α
-        if let Type::Arrow(_, ret) = result.unwrap() {
-            if let Type::Arrow(_, _) = *ret {
-                // correct shape
-            } else {
-                panic!("Expected α → β → α");
-            }
+        let ty = c.type_of(&k).unwrap();
+        if let Type::Arrow(_, ret) = ty {
+            assert!(matches!(*ret, Type::Arrow(_, _)));
         } else {
-            panic!("Expected arrow type");
+            panic!("Expected α → β → α");
         }
-    }
-}
-
-#[cfg(test)]
-mod error_tests {
-    use super::*;
-
-    #[test]
-    fn test_branch_type_mismatch() {
-        let checker = TypeChecker::new();
-        let bad_if = Expr::If {
-            condition: Box::new(Expr::Literal(Literal::Bool(true))),
-            then_branch: Box::new(Expr::Literal(Literal::Int(1))),
-            else_branch: Box::new(Expr::Literal(Literal::Bool(false))),
-        };
-        assert!(checker.type_of(&bad_if).is_err());
-    }
-}
-
-#[cfg(test)]
-mod basic_tests {
-    use super::*;
-
-    #[test]
-    fn test_complex_expression() {
-        let checker = TypeChecker::new();
-        // ((λf. λx. f (f x)) (λy: Int. y)) 0
-        // ≡ apply twice (identity on Int) to 0
-        let complex = Expr::Call {
-            callee: Box::new(Expr::Call {
-                callee: Box::new(Expr::Lambda {
-                    params: vec![("f".to_string(), None)],
-                    body: Box::new(Expr::Lambda {
-                        params: vec![("x".to_string(), None)],
-                        body: Box::new(Expr::Call {
-                            callee: Box::new(Expr::Ident("f".to_string())),
-                            params: vec![Expr::Call {
-                                callee: Box::new(Expr::Ident("f".to_string())),
-                                params: vec![Expr::Ident("x".to_string())],
-                            }],
-                        }),
-                        return_type: None,
-                    }),
-                    return_type: None,
-                }),
-                params: vec![Expr::Lambda {
-                    params: vec![("y".to_string(), Some(Type::int()))],
-                    body: Box::new(Expr::Ident("y".to_string())),
-                    return_type: Some(Type::int()),
-                }],
-            }),
-            params: vec![Expr::Literal(Literal::Int(0))],
-        };
-        let result = checker.type_of(&complex);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Type::int());
-    }
-
-    #[test]
-    fn test_basic_literals() {
-        let checker = TypeChecker::new();
-        let tests = vec![
-            (Literal::Int(42), Type::int()),
-            (Literal::Bool(true), Type::bool()),
-            (Literal::String("hello".to_string()), Type::string()),
-            (Literal::Unit, Type::unit()),
-        ];
-        for (lit, expected) in tests {
-            assert_eq!(checker.type_of(&Expr::Literal(lit)).unwrap(), expected);
-        }
-    }
-
-    #[test]
-    fn test_function_with_annotation() {
-        let checker = TypeChecker::new();
-        let expr = Expr::Lambda {
-            params: vec![("x".to_string(), Some(Type::int()))],
-            body: Box::new(Expr::Ident("x".to_string())),
-            return_type: Some(Type::int()),
-        };
-        let result = checker.type_of(&expr).unwrap();
-        assert_eq!(
-            result,
-            Type::Arrow(Box::new(Type::int()), Box::new(Type::int()))
-        );
     }
 }
 
 // ==============================================================================
-//  Tests — System F specific
+// Tests — System F (λ2) features
 // ==============================================================================
 
 #[cfg(test)]
 mod system_f_tests {
     use super::*;
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
-
-    /// Λα. λx: α. x  (canonical polymorphic identity)
     fn poly_id() -> Expr {
         Expr::TyLam {
             ty_param: "α".to_string(),
@@ -1074,13 +1474,10 @@ mod system_f_tests {
         }
     }
 
-    // ── TyLam ──────────────────────────────────────────────────────────────────
-
     #[test]
-    fn test_ty_lam_yields_forall() {
-        let checker = TypeChecker::new();
-        // Λα. λx: α. x  should have type  ∀α. α → α
-        let ty = checker.type_of(&poly_id()).unwrap();
+    fn test_ty_lam_produces_forall() {
+        let c = TypeChecker::new();
+        let ty = c.type_of(&poly_id()).unwrap();
         assert_eq!(
             ty,
             Type::Forall(
@@ -1094,63 +1491,22 @@ mod system_f_tests {
     }
 
     #[test]
-    fn test_ty_lam_body_uses_rigid_var() {
-        // The body λx: α. x  has type  α → α (not unification variables)
-        // so the bound variable stays rigid inside.
-        let checker = TypeChecker::new();
-        let inner = Expr::Lambda {
-            params: vec![("x".to_string(), Some(Type::ty_var("α")))],
-            body: Box::new(Expr::Ident("x".to_string())),
-            return_type: None,
-        };
-        // Without wrapping in TyLam the α is still a free rigid TyVar.
-        let ty = checker.type_of(&inner).unwrap();
-        assert_eq!(
-            ty,
-            Type::Arrow(
-                Box::new(Type::TyVar("α".to_string())),
-                Box::new(Type::TyVar("α".to_string())),
-            )
-        );
-    }
-
-    // ── TyApp ──────────────────────────────────────────────────────────────────
-
-    #[test]
     fn test_ty_app_int() {
-        let checker = TypeChecker::new();
-        // (Λα. λx: α. x) [Int]  should have type  Int → Int
-        let expr = Expr::TyApp {
+        let c = TypeChecker::new();
+        let e = Expr::TyApp {
             expr: Box::new(poly_id()),
             ty: Box::new(Type::int()),
         };
-        let ty = checker.type_of(&expr).unwrap();
         assert_eq!(
-            ty,
-            Type::Arrow(Box::new(Type::int()), Box::new(Type::int()))
-        );
-    }
-
-    #[test]
-    fn test_ty_app_bool() {
-        let checker = TypeChecker::new();
-        // (Λα. λx: α. x) [Bool]  should have type  Bool → Bool
-        let expr = Expr::TyApp {
-            expr: Box::new(poly_id()),
-            ty: Box::new(Type::bool()),
-        };
-        let ty = checker.type_of(&expr).unwrap();
-        assert_eq!(
-            ty,
-            Type::Arrow(Box::new(Type::bool()), Box::new(Type::bool()))
+            c.type_of(&e).unwrap(),
+            Type::arrow(Type::int(), Type::int())
         );
     }
 
     #[test]
     fn test_ty_app_on_monotype_fails() {
-        let checker = TypeChecker::new();
-        // (λx: Int. x) [Int]  should fail — not a ∀ type
-        let expr = Expr::TyApp {
+        let c = TypeChecker::new();
+        let e = Expr::TyApp {
             expr: Box::new(Expr::Lambda {
                 params: vec![("x".to_string(), Some(Type::int()))],
                 body: Box::new(Expr::Ident("x".to_string())),
@@ -1158,16 +1514,12 @@ mod system_f_tests {
             }),
             ty: Box::new(Type::int()),
         };
-        assert!(checker.type_of(&expr).is_err());
+        assert!(c.type_of(&e).is_err());
     }
 
-    // ── Forall unification ─────────────────────────────────────────────────────
-
     #[test]
-    fn test_forall_unification_alpha_equivalent() {
-        let checker = TypeChecker::new();
-        // Check  (Λα. λx:α. x) : ∀β. β → β
-        // These are α-equivalent so this must succeed.
+    fn test_forall_alpha_equivalent() {
+        let c = TypeChecker::new();
         let expected = Type::Forall(
             "β".to_string(),
             Box::new(Type::Arrow(
@@ -1175,79 +1527,14 @@ mod system_f_tests {
                 Box::new(Type::TyVar("β".to_string())),
             )),
         );
-        assert!(checker.check(&poly_id(), &expected).is_ok());
-    }
-
-    #[test]
-    fn test_forall_unification_mismatch_fails() {
-        let checker = TypeChecker::new();
-        // ∀α. α → α  cannot unify with  ∀α. α → Bool
-        let expr = poly_id();
-        let bad_type = Type::Forall(
-            "α".to_string(),
-            Box::new(Type::Arrow(
-                Box::new(Type::TyVar("α".to_string())),
-                Box::new(Type::bool()),
-            )),
-        );
-        assert!(checker.check(&expr, &bad_type).is_err());
-    }
-
-    // ── Let-polymorphism ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_let_monomorphic_application() {
-        let checker = TypeChecker::new();
-        // let id = λx. x in id 42
-        let expr = Expr::Let {
-            name: "id".to_string(),
-            ann: None,
-            value: Box::new(Expr::Lambda {
-                params: vec![("x".to_string(), None)],
-                body: Box::new(Expr::Ident("x".to_string())),
-                return_type: None,
-            }),
-            body: Box::new(Expr::Call {
-                callee: Box::new(Expr::Ident("id".to_string())),
-                params: vec![Expr::Literal(Literal::Int(42))],
-            }),
-        };
-        let ty = checker.type_of(&expr).unwrap();
-        assert_eq!(ty, Type::int());
-    }
-
-    #[test]
-    fn test_let_polymorphic_self_application() {
-        let checker = TypeChecker::new();
-        // let id = λx. x in id id
-        // Requires let-polymorphism: id must be instantiated at two different types.
-        let expr = Expr::Let {
-            name: "id".to_string(),
-            ann: None,
-            value: Box::new(Expr::Lambda {
-                params: vec![("x".to_string(), None)],
-                body: Box::new(Expr::Ident("x".to_string())),
-                return_type: None,
-            }),
-            body: Box::new(Expr::Call {
-                callee: Box::new(Expr::Ident("id".to_string())),
-                params: vec![Expr::Ident("id".to_string())],
-            }),
-        };
-        // Without let-polymorphism this would fail (trying to unify α with α→α).
-        assert!(
-            checker.type_of(&expr).is_ok(),
-            "id id should type-check with let-polymorphism"
-        );
+        assert!(c.check(&poly_id(), &expected).is_ok());
     }
 
     #[test]
     fn test_let_polymorphic_two_types() {
-        let checker = TypeChecker::new();
-        // let id = λx. x in
-        //   if id true then id 1 else id 2
-        // id used at Bool and Int — only possible with let-polymorphism.
-        let expr = Expr::Let {
+        let c = TypeChecker::new();
+        // let id = λx. x in if id true then id 1 else id 2
+        let e = Expr::Let {
             name: "id".to_string(),
             ann: None,
             value: Box::new(Expr::Lambda {
@@ -1270,15 +1557,14 @@ mod system_f_tests {
                 }),
             }),
         };
-        let ty = checker.type_of(&expr).unwrap();
-        assert_eq!(ty, Type::int());
+        assert_eq!(c.type_of(&e).unwrap(), Type::int());
     }
 
     #[test]
     fn test_let_annotated() {
-        let checker = TypeChecker::new();
-        // let id : ∀a. a → a = λx. x in id 42
-        let expr = Expr::Let {
+        let c = TypeChecker::new();
+        // let id : ∀a. a → a = λx. x in id 99
+        let e = Expr::Let {
             name: "id".to_string(),
             ann: Some(Type::forall(
                 "a",
@@ -1294,217 +1580,613 @@ mod system_f_tests {
                 params: vec![Expr::Literal(Literal::Int(99))],
             }),
         };
-        let ty = checker.type_of(&expr).unwrap();
-        assert_eq!(ty, Type::int());
+        assert_eq!(c.type_of(&e).unwrap(), Type::int());
     }
 
     #[test]
-    fn test_let_annotation_mismatch_fails() {
-        let checker = TypeChecker::new();
-        // let id : Int → Int = λx. x in ...
-        // Annotation is too specific — but λx. x does unify with Int → Int, so this
-        // succeeds. Test that a *wrong* annotation fails.
-        let expr = Expr::Let {
-            name: "const_int".to_string(),
-            ann: Some(Type::arrow(Type::int(), Type::int())),
-            value: Box::new(Expr::Literal(Literal::Bool(true))), // Bool ≠ Int → Int
-            body: Box::new(Expr::Ident("const_int".to_string())),
-        };
-        assert!(checker.type_of(&expr).is_err());
-    }
-
-    // ── Annot (type ascription) ────────────────────────────────────────────────
-
-    #[test]
-    fn test_annot_ok() {
-        let checker = TypeChecker::new();
-        let expr = Expr::Annot {
-            expr: Box::new(Expr::Literal(Literal::Int(0))),
-            ty: Type::int(),
-        };
-        assert_eq!(checker.type_of(&expr).unwrap(), Type::int());
-    }
-
-    #[test]
-    fn test_annot_mismatch_fails() {
-        let checker = TypeChecker::new();
-        let expr = Expr::Annot {
-            expr: Box::new(Expr::Literal(Literal::Int(0))),
-            ty: Type::string(),
-        };
-        assert!(checker.type_of(&expr).is_err());
-    }
-
-    // ── Church encodings ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_church_true() {
-        let checker = TypeChecker::new();
-        // Λα. λt: α. λf: α. t   ≡ Church true : ∀α. α → α → α
-        let church_true = Expr::TyLam {
-            ty_param: "α".to_string(),
-            body: Box::new(Expr::Lambda {
-                params: vec![
-                    ("t".to_string(), Some(Type::ty_var("α"))),
-                    ("f".to_string(), Some(Type::ty_var("α"))),
-                ],
-                body: Box::new(Expr::Ident("t".to_string())),
+    fn test_let_self_application_with_polymorphism() {
+        let c = TypeChecker::new();
+        // let id = λx. x in id id — requires let-polymorphism
+        let e = Expr::Let {
+            name: "id".to_string(),
+            ann: None,
+            value: Box::new(Expr::Lambda {
+                params: vec![("x".to_string(), None)],
+                body: Box::new(Expr::Ident("x".to_string())),
                 return_type: None,
             }),
+            body: Box::new(Expr::Call {
+                callee: Box::new(Expr::Ident("id".to_string())),
+                params: vec![Expr::Ident("id".to_string())],
+            }),
         };
-        let ty = checker.type_of(&church_true).unwrap();
+        assert!(c.type_of(&e).is_ok());
+    }
+}
+
+// ==============================================================================
+// Tests — Kind system
+// ==============================================================================
+
+#[cfg(test)]
+mod kind_tests {
+    use super::*;
+
+    fn reg() -> TypeRegistry {
+        TypeRegistry::new()
+    }
+    fn kenv() -> KindEnv {
+        KindEnv::new()
+    }
+
+    #[test]
+    fn test_primitive_kinds() {
+        let r = reg();
+        assert_eq!(r.kind_of(&Type::int(), &kenv()).unwrap(), Kind::Star);
+        assert_eq!(r.kind_of(&Type::bool(), &kenv()).unwrap(), Kind::Star);
+        assert_eq!(r.kind_of(&Type::string(), &kenv()).unwrap(), Kind::Star);
+    }
+
+    #[test]
+    fn test_arrow_kind() {
+        let r = reg();
+        let ty = Type::arrow(Type::int(), Type::bool());
+        assert_eq!(r.kind_of(&ty, &kenv()).unwrap(), Kind::Star);
+    }
+
+    #[test]
+    fn test_forall_kind_is_star() {
+        let r = reg();
+        let ty = Type::forall("a", Type::arrow(Type::ty_var("a"), Type::ty_var("a")));
+        assert_eq!(r.kind_of(&ty, &kenv()).unwrap(), Kind::Star);
+    }
+
+    #[test]
+    fn test_adt_kind_unary() {
+        let mut r = reg();
+        r.register(
+            "Maybe".to_string(),
+            TypeDecl::Adt {
+                params: vec!["a".to_string()],
+                constructors: vec![
+                    ("Nothing".to_string(), vec![]),
+                    ("Just".to_string(), vec![Type::ty_var("a")]),
+                ],
+            },
+        );
+        // Maybe alone: * → *
         assert_eq!(
-            ty,
-            Type::Forall(
-                "α".to_string(),
+            r.kind_of(&Type::Con("Maybe".to_string()), &kenv()).unwrap(),
+            Kind::arrow(Kind::Star, Kind::Star)
+        );
+        // Maybe Int: *
+        let applied = Type::App(
+            Box::new(Type::Con("Maybe".to_string())),
+            Box::new(Type::int()),
+        );
+        assert_eq!(r.kind_of(&applied, &kenv()).unwrap(), Kind::Star);
+    }
+
+    #[test]
+    fn test_adt_kind_binary() {
+        let mut r = reg();
+        r.register(
+            "Either".to_string(),
+            TypeDecl::Adt {
+                params: vec!["a".to_string(), "b".to_string()],
+                constructors: vec![
+                    ("Left".to_string(), vec![Type::ty_var("a")]),
+                    ("Right".to_string(), vec![Type::ty_var("b")]),
+                ],
+            },
+        );
+        // Either: * → * → *
+        assert_eq!(
+            r.kind_of(&Type::Con("Either".to_string()), &kenv())
+                .unwrap(),
+            Kind::arrow(Kind::Star, Kind::arrow(Kind::Star, Kind::Star))
+        );
+    }
+
+    #[test]
+    fn test_ty_abs_kind() {
+        let r = reg();
+        // Λ(a: *). Maybe a  — but we need Maybe registered, so use a raw TyAbs:
+        // Λ(a: *). a → a   has kind  * → *
+        let ty = Type::ty_abs(
+            "a",
+            Kind::Star,
+            Type::arrow(Type::ty_var("a"), Type::ty_var("a")),
+        );
+        assert_eq!(
+            r.kind_of(&ty, &kenv()).unwrap(),
+            Kind::arrow(Kind::Star, Kind::Star)
+        );
+    }
+
+    #[test]
+    fn test_ty_abs_applied_reduces_kind() {
+        let r = reg();
+        // (Λ(a: *). a → a) Int  normalises to  Int → Int  which has kind *
+        let ty = Type::App(
+            Box::new(Type::ty_abs(
+                "a",
+                Kind::Star,
+                Type::arrow(Type::ty_var("a"), Type::ty_var("a")),
+            )),
+            Box::new(Type::int()),
+        );
+        assert_eq!(r.kind_of(&ty, &kenv()).unwrap(), Kind::Star);
+    }
+
+    #[test]
+    fn test_wrong_kind_app_fails() {
+        let r = reg();
+        // Int Int — Int has kind *, not * → *, so application is ill-kinded
+        let ty = Type::App(Box::new(Type::int()), Box::new(Type::int()));
+        assert!(r.kind_of(&ty, &kenv()).is_err());
+    }
+
+    #[test]
+    fn test_unknown_type_con_fails() {
+        let r = reg();
+        assert!(
+            r.kind_of(&Type::Con("Banana".to_string()), &kenv())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_kind_mismatch_in_annotation_fails() {
+        let mut r = reg();
+        r.register(
+            "Maybe".to_string(),
+            TypeDecl::Adt {
+                params: vec!["a".to_string()],
+                constructors: vec![],
+            },
+        );
+        // Maybe alone (kind * → *) cannot annotate a lambda parameter (needs kind *)
+        let ty = Type::Con("Maybe".to_string());
+        assert!(r.check_kind(&ty, &Kind::Star, &kenv()).is_err());
+    }
+}
+
+// ==============================================================================
+// Tests — Type normalization
+// ==============================================================================
+
+#[cfg(test)]
+mod normalize_tests {
+    use super::*;
+
+    #[test]
+    fn test_ty_abs_beta_reduces() {
+        // (Λa. a → a) Int  →  Int → Int
+        let ty = Type::App(
+            Box::new(Type::ty_abs(
+                "a",
+                Kind::Star,
+                Type::arrow(Type::ty_var("a"), Type::ty_var("a")),
+            )),
+            Box::new(Type::int()),
+        );
+        assert_eq!(ty.normalize(), Type::arrow(Type::int(), Type::int()));
+    }
+
+    #[test]
+    fn test_nested_reduction() {
+        // (Λa. Λb. a) Int Bool  →  Int
+        let ty = Type::App(
+            Box::new(Type::App(
+                Box::new(Type::ty_abs(
+                    "a",
+                    Kind::Star,
+                    Type::ty_abs("b", Kind::Star, Type::ty_var("a")),
+                )),
+                Box::new(Type::int()),
+            )),
+            Box::new(Type::bool()),
+        );
+        assert_eq!(ty.normalize(), Type::int());
+    }
+
+    #[test]
+    fn test_normalize_under_arrow() {
+        // ((Λa. a) Int) → Bool  →  Int → Bool
+        let ty = Type::Arrow(
+            Box::new(Type::App(
+                Box::new(Type::ty_abs("a", Kind::Star, Type::ty_var("a"))),
+                Box::new(Type::int()),
+            )),
+            Box::new(Type::bool()),
+        );
+        assert_eq!(ty.normalize(), Type::arrow(Type::int(), Type::bool()));
+    }
+
+    #[test]
+    fn test_normalize_idempotent() {
+        // Already-normal type stays the same.
+        let ty = Type::arrow(Type::int(), Type::bool());
+        assert_eq!(ty.clone().normalize(), ty);
+    }
+
+    #[test]
+    fn test_unify_normalizes_before_comparing() {
+        // Two types that are beta-equivalent should unify.
+        // (Λa. a) Int  ~  Int
+        let mut state = InferState::new();
+        let lhs = Type::App(
+            Box::new(Type::ty_abs("a", Kind::Star, Type::ty_var("a"))),
+            Box::new(Type::int()),
+        );
+        assert!(state.unify(&lhs, &Type::int()).is_ok());
+    }
+}
+
+// ==============================================================================
+// Tests — Statement / Interpreter
+// ==============================================================================
+
+#[cfg(test)]
+mod statement_tests {
+    use super::*;
+
+    // ── Statement::Type ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_register_maybe() {
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Type {
+                name: "Maybe".to_string(),
+                params: vec!["a".to_string()],
+                constructors: vec![
+                    ("Nothing".to_string(), vec![]),
+                    // Parser would emit Con("a"); resolve_type converts it to TyVar("a").
+                    ("Just".to_string(), vec![Type::Con("a".to_string())]),
+                ],
+            })
+            .unwrap();
+
+        // Registry should know Maybe.
+        assert!(interp.checker.registry.get("Maybe").is_some());
+
+        // Kind of Maybe: * → *
+        assert_eq!(
+            interp.kind_of(&Type::Con("Maybe".to_string())).unwrap(),
+            Kind::arrow(Kind::Star, Kind::Star)
+        );
+
+        // Nothing : ∀a. Maybe a
+        let nothing_ty = interp.type_of_name("Nothing").unwrap();
+        let expected_nothing = Type::Forall(
+            "a".to_string(),
+            Box::new(Type::App(
+                Box::new(Type::Con("Maybe".to_string())),
+                Box::new(Type::TyVar("a".to_string())),
+            )),
+        );
+        assert_eq!(nothing_ty, expected_nothing);
+
+        // Just : ∀a. a → Maybe a
+        let just_ty = interp.type_of_name("Just").unwrap();
+        let expected_just = Type::Forall(
+            "a".to_string(),
+            Box::new(Type::Arrow(
+                Box::new(Type::TyVar("a".to_string())),
+                Box::new(Type::App(
+                    Box::new(Type::Con("Maybe".to_string())),
+                    Box::new(Type::TyVar("a".to_string())),
+                )),
+            )),
+        );
+        assert_eq!(just_ty, expected_just);
+    }
+
+    #[test]
+    fn test_register_either() {
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Type {
+                name: "Either".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                constructors: vec![
+                    ("Left".to_string(), vec![Type::Con("a".to_string())]),
+                    ("Right".to_string(), vec![Type::Con("b".to_string())]),
+                ],
+            })
+            .unwrap();
+
+        // Either : * → * → *
+        assert_eq!(
+            interp.kind_of(&Type::Con("Either".to_string())).unwrap(),
+            Kind::arrow(Kind::Star, Kind::arrow(Kind::Star, Kind::Star))
+        );
+
+        // Left : ∀a. ∀b. a → Either a b
+        let left_ty = interp.type_of_name("Left").unwrap();
+        let expected = Type::Forall(
+            "a".to_string(),
+            Box::new(Type::Forall(
+                "b".to_string(),
                 Box::new(Type::Arrow(
-                    Box::new(Type::TyVar("α".to_string())),
-                    Box::new(Type::Arrow(
-                        Box::new(Type::TyVar("α".to_string())),
-                        Box::new(Type::TyVar("α".to_string())),
+                    Box::new(Type::TyVar("a".to_string())),
+                    Box::new(Type::App(
+                        Box::new(Type::App(
+                            Box::new(Type::Con("Either".to_string())),
+                            Box::new(Type::TyVar("a".to_string())),
+                        )),
+                        Box::new(Type::TyVar("b".to_string())),
                     )),
-                ))
+                )),
+            )),
+        );
+        assert_eq!(left_ty, expected);
+    }
+
+    #[test]
+    fn test_invalid_field_type_fails() {
+        let mut interp = Interpreter::new();
+        // Field type Con("Banana") is not in registry → kind check fails.
+        let result = interp.process(Statement::Type {
+            name: "Bad".to_string(),
+            params: vec![],
+            constructors: vec![("MkBad".to_string(), vec![Type::Con("Banana".to_string())])],
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_duplicate_param_fails() {
+        let mut interp = Interpreter::new();
+        let result = interp.process(Statement::Type {
+            name: "Bad".to_string(),
+            params: vec!["a".to_string(), "a".to_string()],
+            constructors: vec![],
+        });
+        assert!(result.is_err());
+    }
+
+    // ── Statement::Let ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_let_statement_simple() {
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Let {
+                name: "answer".to_string(),
+                ann: None,
+                value: Expr::Literal(Literal::Int(42)),
+            })
+            .unwrap();
+
+        // answer should have type Int.
+        assert_eq!(interp.type_of_name("answer").unwrap(), Type::int());
+    }
+
+    #[test]
+    fn test_let_statement_polymorphic() {
+        let mut interp = Interpreter::new();
+        // let id = λx. x  — should be generalised to ∀a. a → a
+        interp
+            .process(Statement::Let {
+                name: "id".to_string(),
+                ann: None,
+                value: Expr::Lambda {
+                    params: vec![("x".to_string(), None)],
+                    body: Box::new(Expr::Ident("x".to_string())),
+                    return_type: None,
+                },
+            })
+            .unwrap();
+
+        let id_ty = interp.type_of_name("id").unwrap();
+        // Should be a Forall.
+        assert!(
+            matches!(id_ty, Type::Forall(_, _)),
+            "Expected ∀α. α → α, got {:?}",
+            id_ty
+        );
+
+        // Using id at two different types in a subsequent expression.
+        let expr = Expr::If {
+            condition: Box::new(Expr::Call {
+                callee: Box::new(Expr::Ident("id".to_string())),
+                params: vec![Expr::Literal(Literal::Bool(true))],
+            }),
+            then_branch: Box::new(Expr::Call {
+                callee: Box::new(Expr::Ident("id".to_string())),
+                params: vec![Expr::Literal(Literal::Int(1))],
+            }),
+            else_branch: Box::new(Expr::Literal(Literal::Int(0))),
+        };
+        assert_eq!(interp.type_of(&expr).unwrap(), Type::int());
+    }
+
+    #[test]
+    fn test_let_statement_with_annotation() {
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Let {
+                name: "id".to_string(),
+                ann: Some(Type::forall(
+                    "a",
+                    Type::arrow(Type::ty_var("a"), Type::ty_var("a")),
+                )),
+                value: Expr::Lambda {
+                    params: vec![("x".to_string(), None)],
+                    body: Box::new(Expr::Ident("x".to_string())),
+                    return_type: None,
+                },
+            })
+            .unwrap();
+
+        // Applying id to an Int should give Int.
+        let expr = Expr::Call {
+            callee: Box::new(Expr::Ident("id".to_string())),
+            params: vec![Expr::Literal(Literal::Int(7))],
+        };
+        assert_eq!(interp.type_of(&expr).unwrap(), Type::int());
+    }
+
+    #[test]
+    fn test_let_statement_annotation_mismatch_fails() {
+        let mut interp = Interpreter::new();
+        let result = interp.process(Statement::Let {
+            name: "x".to_string(),
+            ann: Some(Type::int()),
+            value: Expr::Literal(Literal::Bool(true)), // Bool ≠ Int
+        });
+        assert!(result.is_err());
+    }
+
+    // ── Interaction between statements ────────────────────────────────────────
+
+    #[test]
+    fn test_constructor_used_in_expression() {
+        let mut interp = Interpreter::new();
+
+        // Register Maybe.
+        interp
+            .process(Statement::Type {
+                name: "Maybe".to_string(),
+                params: vec!["a".to_string()],
+                constructors: vec![
+                    ("Nothing".to_string(), vec![]),
+                    ("Just".to_string(), vec![Type::Con("a".to_string())]),
+                ],
+            })
+            .unwrap();
+
+        // Just 42  should give  Maybe Int
+        let expr = Expr::Call {
+            callee: Box::new(Expr::Ident("Just".to_string())),
+            params: vec![Expr::Literal(Literal::Int(42))],
+        };
+        let ty = interp.type_of(&expr).unwrap();
+        let expected = Type::App(
+            Box::new(Type::Con("Maybe".to_string())),
+            Box::new(Type::int()),
+        );
+        assert_eq!(ty, expected);
+    }
+
+    #[test]
+    fn test_multiple_statements_in_sequence() {
+        let mut interp = Interpreter::new();
+
+        interp
+            .process(Statement::Let {
+                name: "forty_two".to_string(),
+                ann: None,
+                value: Expr::Literal(Literal::Int(42)),
+            })
+            .unwrap();
+
+        interp
+            .process(Statement::Let {
+                name: "is_answer".to_string(),
+                ann: None,
+                // Use forty_two — it should be in scope.
+                value: Expr::Annot {
+                    expr: Box::new(Expr::Ident("forty_two".to_string())),
+                    ty: Type::int(),
+                },
+            })
+            .unwrap();
+
+        assert_eq!(interp.type_of_name("is_answer").unwrap(), Type::int());
+    }
+}
+
+// ==============================================================================
+// Tests — resolve_type
+// ==============================================================================
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_forall_body() {
+        // ∀a. a → Int  — the parser emits Con("a") for the bound variable.
+        let ty = Type::Forall(
+            "a".to_string(),
+            Box::new(Type::Arrow(
+                Box::new(Type::Con("a".to_string())), // Con, not TyVar
+                Box::new(Type::Con("Int".to_string())),
+            )),
+        );
+        let resolved = resolve_type(ty, &HashSet::new());
+        assert_eq!(
+            resolved,
+            Type::Forall(
+                "a".to_string(),
+                Box::new(Type::Arrow(
+                    Box::new(Type::TyVar("a".to_string())), // now TyVar ✓
+                    Box::new(Type::Con("Int".to_string())),
+                )),
             )
         );
     }
 
     #[test]
-    fn test_church_false() {
-        let checker = TypeChecker::new();
-        // Λα. λt: α. λf: α. f   ≡ Church false : ∀α. α → α → α  (same type!)
-        let church_false = Expr::TyLam {
-            ty_param: "α".to_string(),
-            body: Box::new(Expr::Lambda {
-                params: vec![
-                    ("t".to_string(), Some(Type::ty_var("α"))),
-                    ("f".to_string(), Some(Type::ty_var("α"))),
-                ],
-                body: Box::new(Expr::Ident("f".to_string())),
-                return_type: None,
-            }),
-        };
-        let expected = Type::Forall(
-            "α".to_string(),
+    fn test_resolve_does_not_affect_outer_con() {
+        // Con("Int") outside any binder stays Con("Int").
+        let ty = Type::Con("Int".to_string());
+        assert_eq!(resolve_type(ty.clone(), &HashSet::new()), ty);
+    }
+
+    #[test]
+    fn test_resolve_shadowing() {
+        // ∀a. (∀a. a) → a  — inner `a` and outer `a` are distinct binders.
+        let ty = Type::Forall(
+            "a".to_string(),
             Box::new(Type::Arrow(
-                Box::new(Type::TyVar("α".to_string())),
-                Box::new(Type::Arrow(
-                    Box::new(Type::TyVar("α".to_string())),
-                    Box::new(Type::TyVar("α".to_string())),
+                Box::new(Type::Forall(
+                    "a".to_string(),
+                    Box::new(Type::Con("a".to_string())),
                 )),
+                Box::new(Type::Con("a".to_string())),
             )),
         );
-        assert_eq!(checker.type_of(&church_false).unwrap(), expected);
+        let resolved = resolve_type(ty, &HashSet::new());
+        // Both inner and outer `a` should become TyVar("a").
+        if let Type::Forall(_, outer_body) = resolved {
+            if let Type::Arrow(inner_forall, outer_a) = *outer_body {
+                assert_eq!(*outer_a, Type::TyVar("a".to_string()));
+                if let Type::Forall(_, inner_body) = *inner_forall {
+                    assert_eq!(*inner_body, Type::TyVar("a".to_string()));
+                } else {
+                    panic!("Expected inner Forall");
+                }
+            } else {
+                panic!("Expected Arrow");
+            }
+        } else {
+            panic!("Expected outer Forall");
+        }
     }
 
     #[test]
-    fn test_church_numeral_zero() {
-        let checker = TypeChecker::new();
-        // Church zero: Λα. λf: α→α. λx: α. x  : ∀α. (α→α) → α → α
-        let church_zero = Expr::TyLam {
-            ty_param: "α".to_string(),
-            body: Box::new(Expr::Lambda {
-                params: vec![
-                    (
-                        "f".to_string(),
-                        Some(Type::arrow(Type::ty_var("α"), Type::ty_var("α"))),
-                    ),
-                    ("x".to_string(), Some(Type::ty_var("α"))),
-                ],
-                body: Box::new(Expr::Ident("x".to_string())),
-                return_type: None,
-            }),
-        };
-        let ty = checker.type_of(&church_zero).unwrap();
-        let expected = Type::Forall(
-            "α".to_string(),
-            Box::new(Type::Arrow(
-                Box::new(Type::Arrow(
-                    Box::new(Type::TyVar("α".to_string())),
-                    Box::new(Type::TyVar("α".to_string())),
-                )),
-                Box::new(Type::Arrow(
-                    Box::new(Type::TyVar("α".to_string())),
-                    Box::new(Type::TyVar("α".to_string())),
-                )),
-            )),
+    fn test_resolve_with_explicit_bound_set() {
+        // Simulates a parser that collected explicit ∀[a, b] params before body.
+        let body = Type::Arrow(
+            Box::new(Type::Con("a".to_string()).app(Type::Con("b".to_string()))),
+            Box::new(Type::Con("Int".to_string())),
         );
-        assert_eq!(ty, expected);
-    }
-
-    // ── Occurs check ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_occurs_check_prevents_infinite_type() {
-        let checker = TypeChecker::new();
-        // λx. x x  would require  x : α  and  α ≡ α → β  → infinite type
-        let omega = Expr::Lambda {
-            params: vec![("x".to_string(), None)],
-            body: Box::new(Expr::Call {
-                callee: Box::new(Expr::Ident("x".to_string())),
-                params: vec![Expr::Ident("x".to_string())],
-            }),
-            return_type: None,
-        };
-        assert!(
-            checker.type_of(&omega).is_err(),
-            "self-application should fail the occurs check"
-        );
-    }
-
-    // ── Polymorphic application ────────────────────────────────────────────────
-
-    #[test]
-    fn test_poly_id_applied_then_called() {
-        let checker = TypeChecker::new();
-        // ((Λα. λx: α. x) [Int → Int]) (λy: Int. y)
-        // = (λx: Int→Int. x) (λy: Int. y)  : Int → Int
-        let expr = Expr::Call {
-            callee: Box::new(Expr::TyApp {
-                expr: Box::new(poly_id()),
-                ty: Box::new(Type::arrow(Type::int(), Type::int())),
-            }),
-            params: vec![Expr::Lambda {
-                params: vec![("y".to_string(), Some(Type::int()))],
-                body: Box::new(Expr::Ident("y".to_string())),
-                return_type: None,
-            }],
-        };
-        let ty = checker.type_of(&expr).unwrap();
-        assert_eq!(
-            ty,
-            Type::Arrow(Box::new(Type::int()), Box::new(Type::int()))
-        );
-    }
-
-    // ── define() — global environment ─────────────────────────────────────────
-
-    #[test]
-    fn test_define_and_use_polymorphic_builtin() {
-        let mut checker = TypeChecker::new();
-        // Register a polymorphic `const`: ∀a. ∀b. a → b → a
-        checker.define(
-            "const",
-            Type::forall(
-                "a",
-                Type::forall(
-                    "b",
-                    Type::arrow(
-                        Type::ty_var("a"),
-                        Type::arrow(Type::ty_var("b"), Type::ty_var("a")),
-                    ),
-                ),
-            ),
-        );
-
-        // const 42 true  should give  Int
-        let expr = Expr::Call {
-            callee: Box::new(Expr::Call {
-                callee: Box::new(Expr::Ident("const".to_string())),
-                params: vec![Expr::Literal(Literal::Int(42))],
-            }),
-            params: vec![Expr::Literal(Literal::Bool(true))],
-        };
-        let ty = checker.type_of(&expr).unwrap();
-        assert_eq!(ty, Type::int());
+        let bound: HashSet<String> = vec!["a".to_string(), "b".to_string()].into_iter().collect();
+        let resolved = resolve_type(body, &bound);
+        if let Type::Arrow(app, _) = resolved {
+            if let Type::App(f, a) = *app {
+                assert_eq!(*f, Type::TyVar("a".to_string()));
+                assert_eq!(*a, Type::TyVar("b".to_string()));
+            } else {
+                panic!("Expected App");
+            }
+        } else {
+            panic!("Expected Arrow");
+        }
     }
 }
