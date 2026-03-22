@@ -358,6 +358,18 @@ pub enum TypeDecl {
         params: Vec<(String, Kind)>,
         constructors: Vec<(String, Vec<Type>)>,
     },
+    /// Type alias.
+    ///
+    /// Stored as a `TyAbs` chain when there are parameters, or as a raw `Type`
+    /// for zero-parameter aliases.  `kind_of(Con(name))` delegates to the
+    /// stored body; `App(Con(name), arg)` expands the alias before kind-checking.
+    ///
+    /// Example:
+    /// ```text
+    /// type Pair a b = (a, b)   — stored as Λ(a:*). Λ(b:*). (a, b)
+    /// type Int2     = Int      — stored as Con("Int")
+    /// ```
+    Alias(Type),
     /// Primitive / built-in type constant with an explicit kind.
     Primitive(Kind),
 }
@@ -411,6 +423,12 @@ impl TypeRegistry {
             Type::Con(name) => match self.decls.get(name) {
                 Some(TypeDecl::Primitive(k)) => Ok(k.clone()),
                 Some(TypeDecl::Adt { params, .. }) => Ok(Self::adt_kind(params)),
+                // Alias body is either a raw Type (0 params) or a TyAbs chain.
+                // Its kind IS the kind of the alias — delegate directly.
+                Some(TypeDecl::Alias(body)) => {
+                    // body carries its own kind via TyAbs, so use empty kenv.
+                    self.kind_of(&body.clone(), &KindEnv::new())
+                }
                 None => Err(format!("Unknown type constructor: '{}'", name)),
             },
 
@@ -436,13 +454,22 @@ impl TypeRegistry {
 
             // f a: f must have kind k₁ → k₂, a must have kind k₁, result k₂.
             //
-            // If f is a TyAbs, normalize first so the App reduces before kind
-            // checking (handles inline type aliases).
+            // Expansion order:
+            //   1. Beta-reduce TyAbs on the left (normalize).
+            //   2. Expand Con aliases on the left.
+            // Both may reveal a fresh redex, so we loop via recursion.
             Type::App(f, a) => {
-                // Try beta-reduce first (handles TyAbs on the left).
+                // 1. Try beta-reduce (handles TyAbs on left).
                 let normalized = ty.clone().normalize();
                 if normalized != *ty {
                     return self.kind_of(&normalized, kenv);
+                }
+                // 2. Expand Con alias on the left, then recurse.
+                if let Type::Con(name) = f.as_ref() {
+                    if let Some(TypeDecl::Alias(body)) = self.decls.get(name.as_str()) {
+                        let expanded = Type::App(Box::new(body.clone()), a.clone());
+                        return self.kind_of(&expanded.normalize(), kenv);
+                    }
                 }
                 match self.kind_of(f, kenv)? {
                     Kind::Arrow(k1, k2) => {
@@ -1161,16 +1188,22 @@ pub enum Statement {
         value: Expr,
     },
     /// `type Name (a: *) (f: * → *) … = Ctor₁ T… | Ctor₂ T… | …`
+    ///  OR
+    /// `type Name (a: *) … : <ann>`
     ///
-    /// * Registers the ADT in `TypeRegistry`.
-    /// * Injects each constructor's polytype into the value `TypeEnv`.
+    /// * If `ann` is `Some(ty)`: type alias — `ty` is the RHS type expression.
+    ///   No constructors are expected (they are ignored if supplied).
+    ///   The alias is stored as a `TyAbs` chain over `params` in `TypeRegistry`.
+    /// * If `ann` is `None`: normal ADT declaration.
     ///
-    /// `params` — `(name, kind)` pairs. Omitted kinds default to `*`.
-    /// Field types may use `Con("a")` for type parameters — `resolve_type` is
-    /// applied automatically.
+    /// In both cases `params` carries `(name, kind)` pairs.
+    /// Field types in constructors may use `Con("a")` for type parameters —
+    /// `resolve_type` is applied automatically.
     Type {
         name: String,
         params: Vec<(String, Kind)>,
+        /// RHS of a type alias.  `None` for normal ADT declarations.
+        ann: Option<Type>,
         constructors: Vec<(String, Vec<Type>)>,
     },
 }
@@ -1197,8 +1230,9 @@ impl Interpreter {
             Statement::Type {
                 name,
                 params,
+                ann,
                 constructors,
-            } => self.process_type(name, params, constructors),
+            } => self.process_type(name, params, ann, constructors),
             Statement::Let { name, ann, value } => self.process_let(name, ann, value),
         }
     }
@@ -1207,6 +1241,7 @@ impl Interpreter {
         &mut self,
         name: String,
         params: Vec<(String, Kind)>,
+        ann: Option<Type>,
         constructors: Vec<(String, Vec<Type>)>,
     ) -> Result<(), String> {
         // Param names must be distinct.
@@ -1220,48 +1255,76 @@ impl Interpreter {
             }
         }
 
-        // Kind env: each param bound at its declared kind.
+        // Kind env and bound set shared by both branches.
         let kenv = params
             .iter()
             .fold(KindEnv::new(), |e, (p, k)| e.extend(p.clone(), k.clone()));
-        // Bound set for resolve_type (only names matter here).
         let bound: HashSet<String> = params.iter().map(|(p, _)| p.clone()).collect();
 
-        // Resolve and kind-check constructor field types.
-        // Field types must have kind * (they classify values).
-        let resolved_ctors = constructors
-            .into_iter()
-            .map(|(ctor_name, fields)| {
-                let resolved_fields = fields
-                    .into_iter()
-                    .map(|field| {
-                        let resolved = resolve_type(field, &bound);
-                        self.checker
-                            .registry
-                            .check_kind(&resolved, &Kind::Star, &kenv)
-                            .map_err(|e| {
-                                format!("Constructor '{}' of type '{}': {}", ctor_name, name, e)
-                            })?;
-                        Ok(resolved)
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok((ctor_name, resolved_fields))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        if let Some(alias_ty) = ann {
+            // ── Type alias branch ─────────────────────────────────────────────
+            //
+            // Resolve Con → TyVar for bound names, then wrap body in a TyAbs
+            // chain for each param so the stored type carries full kind info.
+            //
+            //   type List2 (a: *) = List a
+            //   → stored as  Λ(a: *). App(Con("List"), TyVar("a"))
+            //   → kind: * → *
+            let resolved = resolve_type(alias_ty, &bound);
 
-        // Register the ADT.
-        self.checker.registry.register(
-            name.clone(),
-            TypeDecl::Adt {
-                params: params.clone(),
-                constructors: resolved_ctors.clone(),
-            },
-        );
+            // The body (innermost) must have kind *.
+            self.checker
+                .registry
+                .check_kind(&resolved, &Kind::Star, &kenv)
+                .map_err(|e| format!("Alias body for '{}': {}", name, e))?;
 
-        // Inject constructor polytypes into the value environment.
-        for (ctor_name, fields) in &resolved_ctors {
-            let ctor_ty = TypeRegistry::synthesize_ctor_type(&name, &params, fields);
-            self.checker.env.insert(ctor_name.clone(), ctor_ty);
+            // Wrap in TyAbs for each param (outermost = first param).
+            let alias_body = params
+                .iter()
+                .rfold(resolved, |body, (param, kind)| Type::TyAbs {
+                    param: param.clone(),
+                    kind: kind.clone(),
+                    body: Box::new(body),
+                });
+
+            self.checker
+                .registry
+                .register(name, TypeDecl::Alias(alias_body));
+            // No constructors injected for aliases.
+        } else {
+            // ── ADT branch ────────────────────────────────────────────────────
+            let resolved_ctors = constructors
+                .into_iter()
+                .map(|(ctor_name, fields)| {
+                    let resolved_fields = fields
+                        .into_iter()
+                        .map(|field| {
+                            let resolved = resolve_type(field, &bound);
+                            self.checker
+                                .registry
+                                .check_kind(&resolved, &Kind::Star, &kenv)
+                                .map_err(|e| {
+                                    format!("Constructor '{}' of type '{}': {}", ctor_name, name, e)
+                                })?;
+                            Ok(resolved)
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    Ok((ctor_name, resolved_fields))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+
+            self.checker.registry.register(
+                name.clone(),
+                TypeDecl::Adt {
+                    params: params.clone(),
+                    constructors: resolved_ctors.clone(),
+                },
+            );
+
+            for (ctor_name, fields) in &resolved_ctors {
+                let ctor_ty = TypeRegistry::synthesize_ctor_type(&name, &params, fields);
+                self.checker.env.insert(ctor_name.clone(), ctor_ty);
+            }
         }
 
         Ok(())
@@ -1876,6 +1939,7 @@ mod statement_tests {
             .process(Statement::Type {
                 name: "Maybe".to_string(),
                 params: vec![("a".to_string(), Kind::Star)],
+                ann: None,
                 constructors: vec![
                     ("Nothing".to_string(), vec![]),
                     ("Just".to_string(), vec![Type::Con("a".to_string())]),
@@ -1926,6 +1990,7 @@ mod statement_tests {
             .process(Statement::Type {
                 name: "Either".to_string(),
                 params: vec![("a".to_string(), Kind::Star), ("b".to_string(), Kind::Star)],
+                ann: None,
                 constructors: vec![
                     ("Left".to_string(), vec![Type::Con("a".to_string())]),
                     ("Right".to_string(), vec![Type::Con("b".to_string())]),
@@ -1968,6 +2033,7 @@ mod statement_tests {
         let result = interp.process(Statement::Type {
             name: "Bad".to_string(),
             params: vec![],
+            ann: None,
             constructors: vec![("MkBad".to_string(), vec![Type::Con("Banana".to_string())])],
         });
         assert!(result.is_err());
@@ -1979,6 +2045,7 @@ mod statement_tests {
         let result = interp.process(Statement::Type {
             name: "Bad".to_string(),
             params: vec![("a".to_string(), Kind::Star), ("a".to_string(), Kind::Star)],
+            ann: None,
             constructors: vec![],
         });
         assert!(result.is_err());
@@ -2088,6 +2155,7 @@ mod statement_tests {
             .process(Statement::Type {
                 name: "Maybe".to_string(),
                 params: vec![("a".to_string(), Kind::Star)],
+                ann: None,
                 constructors: vec![
                     ("Nothing".to_string(), vec![]),
                     ("Just".to_string(), vec![Type::Con("a".to_string())]),
@@ -2250,6 +2318,7 @@ mod omega_tests {
                     ("f".to_string(), Kind::arrow(Kind::Star, Kind::Star)),
                     ("a".to_string(), Kind::Star),
                 ],
+                ann: None,
                 constructors: vec![(
                     "MkApp".to_string(),
                     vec![Type::App(
@@ -2303,6 +2372,7 @@ mod omega_tests {
         let result = interp.process(Statement::Type {
             name: "Bad".to_string(),
             params: vec![("a".to_string(), Kind::arrow(Kind::Star, Kind::Star))],
+            ann: None,
             constructors: vec![("MkBad".to_string(), vec![Type::Con("a".to_string())])],
         });
         assert!(result.is_err());
@@ -2372,6 +2442,7 @@ mod omega_tests {
             .process(Statement::Type {
                 name: "Maybe".to_string(),
                 params: vec![("a".to_string(), Kind::Star)],
+                ann: None,
                 constructors: vec![],
             })
             .unwrap();
@@ -2431,5 +2502,153 @@ mod omega_tests {
             )),
         );
         assert_eq!(interp.kind_of(&fmap_type).unwrap(), Kind::Star);
+    }
+}
+
+// ==============================================================================
+// Tests — Type aliases (Statement::Type with ann)
+// ==============================================================================
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    #[test]
+    fn test_zero_param_alias() {
+        // type MyInt = Int
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Type {
+                name: "MyInt".to_string(),
+                params: vec![],
+                ann: Some(Type::Con("Int".to_string())),
+                constructors: vec![],
+            })
+            .unwrap();
+
+        // Kind of MyInt is *
+        assert_eq!(
+            interp.kind_of(&Type::Con("MyInt".to_string())).unwrap(),
+            Kind::Star
+        );
+    }
+
+    #[test]
+    fn test_one_param_alias_kind() {
+        // type List2 (a: *) = List a  — but List isn't registered, so use Maybe
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Type {
+                name: "Maybe".to_string(),
+                params: vec![("a".to_string(), Kind::Star)],
+                ann: None,
+                constructors: vec![
+                    ("Nothing".to_string(), vec![]),
+                    ("Just".to_string(), vec![Type::Con("a".to_string())]),
+                ],
+            })
+            .unwrap();
+
+        // type MaybeAlias (a: *) = Maybe a
+        interp
+            .process(Statement::Type {
+                name: "MaybeAlias".to_string(),
+                params: vec![("a".to_string(), Kind::Star)],
+                ann: Some(Type::App(
+                    Box::new(Type::Con("Maybe".to_string())),
+                    Box::new(Type::Con("a".to_string())), // resolve_type converts → TyVar("a")
+                )),
+                constructors: vec![],
+            })
+            .unwrap();
+
+        // MaybeAlias alone: * → *
+        assert_eq!(
+            interp
+                .kind_of(&Type::Con("MaybeAlias".to_string()))
+                .unwrap(),
+            Kind::arrow(Kind::Star, Kind::Star)
+        );
+
+        // MaybeAlias Int: *  (via Con alias expansion in kind_of App)
+        let applied = Type::App(
+            Box::new(Type::Con("MaybeAlias".to_string())),
+            Box::new(Type::int()),
+        );
+        assert_eq!(interp.kind_of(&applied).unwrap(), Kind::Star);
+    }
+
+    #[test]
+    fn test_hkt_alias() {
+        // type Id (f: * → *) = f   — alias for an HKT param
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Type {
+                name: "Maybe".to_string(),
+                params: vec![("a".to_string(), Kind::Star)],
+                ann: None,
+                constructors: vec![],
+            })
+            .unwrap();
+
+        // type WrapF (f: * → *) (a: *) = f a
+        interp
+            .process(Statement::Type {
+                name: "WrapF".to_string(),
+                params: vec![
+                    ("f".to_string(), Kind::arrow(Kind::Star, Kind::Star)),
+                    ("a".to_string(), Kind::Star),
+                ],
+                ann: Some(Type::App(
+                    Box::new(Type::Con("f".to_string())),
+                    Box::new(Type::Con("a".to_string())),
+                )),
+                constructors: vec![],
+            })
+            .unwrap();
+
+        // WrapF: (* → *) → * → *
+        assert_eq!(
+            interp.kind_of(&Type::Con("WrapF".to_string())).unwrap(),
+            Kind::arrow(
+                Kind::arrow(Kind::Star, Kind::Star),
+                Kind::arrow(Kind::Star, Kind::Star),
+            )
+        );
+    }
+
+    #[test]
+    fn test_alias_body_ill_kinded_fails() {
+        // type Bad = Maybe   — Maybe has kind * → *, not *
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Type {
+                name: "Maybe".to_string(),
+                params: vec![("a".to_string(), Kind::Star)],
+                ann: None,
+                constructors: vec![],
+            })
+            .unwrap();
+
+        let result = interp.process(Statement::Type {
+            name: "Bad".to_string(),
+            params: vec![],
+            ann: Some(Type::Con("Maybe".to_string())), // kind * → *, not *
+            constructors: vec![],
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_alias_unknown_rhs_fails() {
+        // type Bad = Nonexistent
+        let mut interp = Interpreter::new();
+        let result = interp.process(Statement::Type {
+            name: "Bad".to_string(),
+            params: vec![],
+            ann: Some(Type::Con("Nonexistent".to_string())),
+            constructors: vec![],
+        });
+        assert!(result.is_err());
     }
 }
