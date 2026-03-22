@@ -325,7 +325,7 @@ impl fmt::Display for Type {
             Type::TyVar(n) => write!(f, "{}", n),
             Type::App(func, arg) => write!(f, "({} {})", func, arg),
             Type::Arrow(p, r) => match p.as_ref() {
-                Type::Arrow(_, _) | Type::Forall(_, _) | Type::TyAbs { .. } => {
+                Type::Arrow(_, _) | Type::Forall(_, _, _) | Type::TyAbs { .. } => {
                     write!(f, "({}) → {}", p, r)
                 }
                 _ => write!(f, "{} → {}", p, r),
@@ -702,7 +702,9 @@ impl InferState {
             Type::App(t1, t2) => {
                 Type::App(Box::new(self.apply_subs(t1)), Box::new(self.apply_subs(t2)))
             }
-            Type::Forall(v, b) => Type::Forall(v.clone(), Box::new(self.apply_subs(b))),
+            Type::Forall(v, k, b) => {
+                Type::Forall(v.clone(), k.clone(), Box::new(self.apply_subs(b)))
+            }
             Type::TyAbs { param, kind, body } => Type::TyAbs {
                 param: param.clone(),
                 kind: kind.clone(),
@@ -1513,6 +1515,7 @@ mod system_f_tests {
             ty,
             Type::Forall(
                 "α".to_string(),
+                Kind::Star,
                 Box::new(Type::Arrow(
                     Box::new(Type::TyVar("α".to_string())),
                     Box::new(Type::TyVar("α".to_string())),
@@ -1553,6 +1556,7 @@ mod system_f_tests {
         let c = TypeChecker::new();
         let expected = Type::Forall(
             "β".to_string(),
+            Kind::Star,
             Box::new(Type::Arrow(
                 Box::new(Type::TyVar("β".to_string())),
                 Box::new(Type::TyVar("β".to_string())),
@@ -1678,7 +1682,7 @@ mod kind_tests {
         r.register(
             "Maybe".to_string(),
             TypeDecl::Adt {
-                params: vec!["a".to_string()],
+                params: vec![("a".to_string(), Kind::Star)],
                 constructors: vec![
                     ("Nothing".to_string(), vec![]),
                     ("Just".to_string(), vec![Type::ty_var("a")]),
@@ -1704,7 +1708,7 @@ mod kind_tests {
         r.register(
             "Either".to_string(),
             TypeDecl::Adt {
-                params: vec!["a".to_string(), "b".to_string()],
+                params: vec![("a".to_string(), Kind::Star), ("b".to_string(), Kind::Star)],
                 constructors: vec![
                     ("Left".to_string(), vec![Type::ty_var("a")]),
                     ("Right".to_string(), vec![Type::ty_var("b")]),
@@ -1773,7 +1777,7 @@ mod kind_tests {
         r.register(
             "Maybe".to_string(),
             TypeDecl::Adt {
-                params: vec!["a".to_string()],
+                params: vec![("a".to_string(), Kind::Star)],
                 constructors: vec![],
             },
         );
@@ -2223,5 +2227,209 @@ mod resolve_tests {
         } else {
             panic!("Expected Arrow");
         }
+    }
+}
+
+// ==============================================================================
+// Tests — System Fω proper (higher-kinded params, kinded forall)
+// ==============================================================================
+
+#[cfg(test)]
+mod omega_tests {
+    use super::*;
+
+    #[test]
+    fn test_hkt_adt_functor_shape() {
+        // type App (f: * → *) (a: *) = MkApp(f a)
+        // kind of App: (* → *) → * → *
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Type {
+                name: "App".to_string(),
+                params: vec![
+                    ("f".to_string(), Kind::arrow(Kind::Star, Kind::Star)),
+                    ("a".to_string(), Kind::Star),
+                ],
+                constructors: vec![(
+                    "MkApp".to_string(),
+                    vec![Type::App(
+                        Box::new(Type::Con("f".to_string())),
+                        Box::new(Type::Con("a".to_string())),
+                    )],
+                )],
+            })
+            .unwrap();
+
+        // App : (* → *) → * → *
+        let expected_kind = Kind::arrow(
+            Kind::arrow(Kind::Star, Kind::Star),
+            Kind::arrow(Kind::Star, Kind::Star),
+        );
+        assert_eq!(
+            interp.kind_of(&Type::Con("App".to_string())).unwrap(),
+            expected_kind
+        );
+
+        // MkApp : ∀(f: * → *). ∀(a: *). f a → App f a
+        let mk_app_ty = interp.type_of_name("MkApp").unwrap();
+        let expected = Type::Forall(
+            "f".to_string(),
+            Kind::arrow(Kind::Star, Kind::Star),
+            Box::new(Type::Forall(
+                "a".to_string(),
+                Kind::Star,
+                Box::new(Type::Arrow(
+                    Box::new(Type::App(
+                        Box::new(Type::TyVar("f".to_string())),
+                        Box::new(Type::TyVar("a".to_string())),
+                    )),
+                    Box::new(Type::App(
+                        Box::new(Type::App(
+                            Box::new(Type::Con("App".to_string())),
+                            Box::new(Type::TyVar("f".to_string())),
+                        )),
+                        Box::new(Type::TyVar("a".to_string())),
+                    )),
+                )),
+            )),
+        );
+        assert_eq!(mk_app_ty, expected);
+    }
+
+    #[test]
+    fn test_hkt_field_wrong_kind_fails() {
+        // type Bad (a: * → *) = MkBad(a)  — field `a` alone: kind * → *, not *
+        let mut interp = Interpreter::new();
+        let result = interp.process(Statement::Type {
+            name: "Bad".to_string(),
+            params: vec![("a".to_string(), Kind::arrow(Kind::Star, Kind::Star))],
+            constructors: vec![("MkBad".to_string(), vec![Type::Con("a".to_string())])],
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_kinded_forall_kind_checks() {
+        // ∀(f: * → *). f Int → f Bool  — well-kinded, result is *
+        let reg = TypeRegistry::new();
+        let ty = Type::Forall(
+            "f".to_string(),
+            Kind::arrow(Kind::Star, Kind::Star),
+            Box::new(Type::Arrow(
+                Box::new(Type::App(
+                    Box::new(Type::TyVar("f".to_string())),
+                    Box::new(Type::int()),
+                )),
+                Box::new(Type::App(
+                    Box::new(Type::TyVar("f".to_string())),
+                    Box::new(Type::bool()),
+                )),
+            )),
+        );
+        assert_eq!(reg.kind_of(&ty, &KindEnv::new()).unwrap(), Kind::Star);
+    }
+
+    #[test]
+    fn test_kinded_forall_body_ill_kinded_fails() {
+        // ∀(f: * → *). f  — body has kind * → *, not *
+        let reg = TypeRegistry::new();
+        let ty = Type::Forall(
+            "f".to_string(),
+            Kind::arrow(Kind::Star, Kind::Star),
+            Box::new(Type::TyVar("f".to_string())),
+        );
+        assert!(reg.check_kind(&ty, &Kind::Star, &KindEnv::new()).is_err());
+    }
+
+    #[test]
+    fn test_forall_kind_mismatch_unification_fails() {
+        // ∀(f: * → *). f Int  vs  ∀(a: *). a → Int  — binder kinds differ
+        let mut state = InferState::new();
+        let t1 = Type::Forall(
+            "f".to_string(),
+            Kind::arrow(Kind::Star, Kind::Star),
+            Box::new(Type::App(
+                Box::new(Type::TyVar("f".to_string())),
+                Box::new(Type::int()),
+            )),
+        );
+        let t2 = Type::Forall(
+            "a".to_string(),
+            Kind::Star,
+            Box::new(Type::Arrow(
+                Box::new(Type::TyVar("a".to_string())),
+                Box::new(Type::int()),
+            )),
+        );
+        assert!(state.unify(&t1, &t2).is_err());
+    }
+
+    #[test]
+    fn test_ty_abs_higher_kind_normalizes() {
+        // (Λ(f: * → *). f Int) Maybe  →  Maybe Int
+        let mut interp = Interpreter::new();
+        interp
+            .process(Statement::Type {
+                name: "Maybe".to_string(),
+                params: vec![("a".to_string(), Kind::Star)],
+                constructors: vec![],
+            })
+            .unwrap();
+
+        let ty = Type::App(
+            Box::new(Type::ty_abs(
+                "f",
+                Kind::arrow(Kind::Star, Kind::Star),
+                Type::App(
+                    Box::new(Type::TyVar("f".to_string())),
+                    Box::new(Type::int()),
+                ),
+            )),
+            Box::new(Type::Con("Maybe".to_string())),
+        );
+        let normed = ty.normalize();
+        assert_eq!(
+            normed,
+            Type::App(
+                Box::new(Type::Con("Maybe".to_string())),
+                Box::new(Type::int()),
+            )
+        );
+        assert_eq!(interp.kind_of(&normed).unwrap(), Kind::Star);
+    }
+
+    #[test]
+    fn test_kinded_forall_annotation_kind_checks_as_star() {
+        // ∀(f: * → *). ∀(a: *). ∀(b: *). (a → b) → f a → f b
+        let interp = Interpreter::new();
+        let fmap_type = Type::Forall(
+            "f".to_string(),
+            Kind::arrow(Kind::Star, Kind::Star),
+            Box::new(Type::Forall(
+                "a".to_string(),
+                Kind::Star,
+                Box::new(Type::Forall(
+                    "b".to_string(),
+                    Kind::Star,
+                    Box::new(Type::Arrow(
+                        Box::new(Type::Arrow(
+                            Box::new(Type::TyVar("a".to_string())),
+                            Box::new(Type::TyVar("b".to_string())),
+                        )),
+                        Box::new(Type::Arrow(
+                            Box::new(Type::App(
+                                Box::new(Type::TyVar("f".to_string())),
+                                Box::new(Type::TyVar("a".to_string())),
+                            )),
+                            Box::new(Type::App(
+                                Box::new(Type::TyVar("f".to_string())),
+                                Box::new(Type::TyVar("b".to_string())),
+                            )),
+                        )),
+                    )),
+                )),
+            )),
+        );
+        assert_eq!(interp.kind_of(&fmap_type).unwrap(), Kind::Star);
     }
 }
