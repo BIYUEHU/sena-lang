@@ -573,7 +573,7 @@ impl KindEnv {
 // ==============================================================================
 // Expressions
 // ==============================================================================
-
+#[derive(Clone, Debug)]
 pub enum Expr {
     Ident(String),
     Literal(Literal),
@@ -1177,6 +1177,7 @@ impl Default for TypeChecker {
 // ==============================================================================
 
 /// A top-level declaration.
+#[derive(Clone, Debug)]
 pub enum Statement {
     /// `let name [: ann] = value`
     ///
@@ -1223,6 +1224,13 @@ impl Interpreter {
         Self {
             checker: TypeChecker::new(),
         }
+    }
+
+    pub fn process_stmts(&mut self, stmts: &[Statement]) -> Result<(), String> {
+        stmts
+            .iter()
+            .map(|stmt| self.process(stmt.clone()))
+            .collect()
     }
 
     pub fn process(&mut self, stmt: Statement) -> Result<(), String> {

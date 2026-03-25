@@ -1,5 +1,6 @@
 use crate::utils::{
-    eval_code, get_checked_ast, parse_code, transofrm_code, unsafe_eval_code, RunningMode,
+    eval_code, eval_code2, get_checked_ast, parse_code, transofrm_code, unsafe_eval_code,
+    RunningMode,
 };
 use mihama_core::checker::Checker;
 use mihama_core::env::{new_checker_env, new_evaluator_env};
@@ -8,6 +9,7 @@ use mihama_core::evaluator::Evaluator;
 use mihama_core::lexer::Lexer;
 use std::fs;
 use std::io::{self, Write};
+use ttt::Interpreter;
 
 const PROMPT: &str = "> ";
 
@@ -212,16 +214,24 @@ fn execute_code(
             }
             Err(err) => eprintln!("Checker error: {}", err),
         },
-        RunningMode::Evaluator => match eval_code(code, checker, evaluator) {
-            Ok(val) => {
-                if show_types {
-                    println!("{} : {}", val.pretty_print(), val.type_info());
-                } else {
-                    println!("{}", val.to_string());
-                }
+        // RunningMode::Evaluator => match eval_code(code, checker, evaluator) {
+        //     Ok(val) => {
+        //         if show_types {
+        //             println!("{} : {}", val.pretty_print(), val.type_info());
+        //         } else {
+        //             println!("{}", val.to_string());
+        //         }
+        //     }
+        //     Err(err) => eprintln!("{}", err),
+        // },
+        RunningMode::Evaluator => {
+            let mut inter = Interpreter::new();
+            if let Err(err) = eval_code2(code, &mut inter) {
+                eprintln!("{}", err);
+            } else {
+                print!("ok")
             }
-            Err(err) => eprintln!("{}", err),
-        },
+        }
         RunningMode::UnsafeEvaluator => match unsafe_eval_code(code, evaluator) {
             Ok(val) => {
                 if show_types {

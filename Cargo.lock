@@ -1072,6 +1072,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "mihama-core",
+ "ttt",
 ]
 
 [[package]]
@@ -1786,9 +1787,6 @@ dependencies = [
 [[package]]
 name = "ttt"
 version = "0.1.0"
-dependencies = [
- "mihama-core",
-]
 
 [[package]]
 name = "typed-builder"

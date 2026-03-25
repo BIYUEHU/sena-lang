@@ -12,6 +12,11 @@ use mihama_core::{
     utils::to_checked_stmt,
 };
 use std::fmt::Display;
+use ttt::Interpreter;
+
+use crate::utils::temp::convert_program;
+
+mod temp;
 
 pub enum RunningMode {
     Lexer,
@@ -111,6 +116,13 @@ pub fn eval_code(
     evaluator
         .eval(&get_checked_ast(code, checker)?)
         .map_err(|err| format!("Evaluator error: {}", err))
+}
+
+pub fn eval_code2(code: &str, inter: &mut Interpreter) -> Result<(), String> {
+    let program = convert_program(get_ast(code)?);
+    inter
+        .process_stmts(program.as_slice())
+        .map_err(|err| format!("Checker error: {}", err))
 }
 
 pub fn unsafe_eval_code(code: &str, evaluator: &mut Evaluator) -> Result<Object, String> {
