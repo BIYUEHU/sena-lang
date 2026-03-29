@@ -217,6 +217,16 @@ impl Parser {
     fn let_declaration(&mut self) -> Result<Stmt, ParseError> {
         let (name, type_annotation) = self.collect_bindings()?;
         self.next_token();
+        if self.current_token == Token::Intrinsic {
+            return if let Some(type_annotation) = type_annotation {
+                Ok(Stmt::LetIntrinsic {
+                    name,
+                    type_annotation,
+                })
+            } else {
+                Err(self.error_invalid_syntax("intrinsic binding requires type annotation"))
+            };
+        }
         let value = Box::new(self.expression(Precedence::Lowest)?);
         if self.next_token_is(&Token::In) {
             return Err(self.error_invalid_syntax("let declaration couldn't have 'in' clause"));

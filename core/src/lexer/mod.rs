@@ -270,6 +270,7 @@ impl<'a> Lexer<'a> {
             "as" => Token::As,
             "abstract" => Token::Abstract,
             "with" => Token::With,
+            "intrinsic" => Token::Intrinsic,
             str => Token::Ident(str.to_string()),
         }
     }

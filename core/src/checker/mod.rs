@@ -629,6 +629,7 @@ impl Checker {
                     only_abstract: *only_abstract,
                 })
             }
+            _ => panic!(""),
         }
     }
 

@@ -174,6 +174,10 @@ pub fn to_checked_stmt(stmt: Stmt) -> CheckedStmt {
             type_annotation: TypeObject::Any,
             value: to_checked_expr(*value),
         },
+        Stmt::LetIntrinsic { name, .. } => CheckedStmt::LetIntrinsic {
+            name,
+            type_annotation: TypeObject::Any,
+        },
         Stmt::Type {
             name,
             params,

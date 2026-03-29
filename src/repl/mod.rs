@@ -242,7 +242,7 @@ fn execute_code(
         // },
         RunningMode::Evaluator => match eval_code2(code, inter) {
             Ok(typ) => {
-                print!("{} : \n", typ)
+                println!("{}", typ)
             }
             Err(err) => eprintln!("Type error: {}", err),
         },

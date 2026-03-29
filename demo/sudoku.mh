@@ -194,7 +194,7 @@ let solve: Grid -> Maybe(Grid) = (g) =>
                   | Nothing => tryNumbers(xs)
               | Nil => Nothing
           in
-          tryNumbers(0 .. 9)
+          tryNumbers(1 .. 9)
     | Nothing => Just(g)
 
 // let digHoles: Grid -> Int -> Grid = (g, k) =>

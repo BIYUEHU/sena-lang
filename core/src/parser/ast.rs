@@ -172,6 +172,10 @@ pub enum Stmt {
         type_annotation: Option<TypeExpr>,
         value: Box<Expr>,
     },
+    LetIntrinsic {
+        name: String,
+        type_annotation: TypeExpr,
+    },
     Type {
         name: String,
         params: Vec<String>,

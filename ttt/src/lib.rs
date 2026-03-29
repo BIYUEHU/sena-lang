@@ -591,16 +591,16 @@ pub enum Expr {
         then_branch: Box<Expr>,
         else_branch: Box<Expr>,
     },
-    /// System F — type abstraction: `Λα. e`. Produces `∀α. T(e)`.
-    TyLam {
-        ty_param: String,
-        body: Box<Expr>,
-    },
-    /// System F — type application: `e [τ]`. Requires `e : ∀α. σ`.
-    TyApp {
-        expr: Box<Expr>,
-        ty: Box<Type>,
-    },
+    // /// System F — type abstraction: `Λα. e`. Produces `∀α. T(e)`.
+    // TyLam {
+    //     ty_param: String,
+    //     body: Box<Expr>,
+    // },
+    // /// System F — type application: `e [τ]`. Requires `e : ∀α. σ`.
+    // TyApp {
+    //     expr: Box<Expr>,
+    //     ty: Box<Type>,
+    // },
     /// Let with generalization (inside expressions).
     Let {
         name: String,
@@ -985,29 +985,28 @@ impl TypeChecker {
                 else_branch,
             } => Self::infer_if(condition, then_branch, else_branch, env, state, reg, kenv),
 
-            // Λα. e — bind α in kenv (kind *), infer body, wrap result in ∀(α:*).
-            Expr::TyLam { ty_param, body } => {
-                let ext = kenv.extend(ty_param.clone(), Kind::Star);
-                let body_ty = Self::infer(body, env, state, reg, &ext)?;
-                let body_ty = state.apply_subs(&body_ty);
-                Ok(Type::Forall(
-                    ty_param.clone(),
-                    Kind::Star,
-                    Box::new(body_ty),
-                ))
-            }
+            // // Λα. e — bind α in kenv (kind *), infer body, wrap result in ∀(α:*).
+            // Expr::TyLam { ty_param, body } => {
+            //     let ext = kenv.extend(ty_param.clone(), Kind::Star);
+            //     let body_ty = Self::infer(body, env, state, reg, &ext)?;
+            //     let body_ty = state.apply_subs(&body_ty);
+            //     Ok(Type::Forall(
+            //         ty_param.clone(),
+            //         Kind::Star,
+            //         Box::new(body_ty),
+            //     ))
+            // }
 
-            // e [τ] — type application.
-            Expr::TyApp { expr, ty } => {
-                reg.kind_of(ty, kenv)
-                    .map_err(|e| format!("In type-application argument: {}", e))?;
-                let expr_ty = Self::infer(expr, env, state, reg, kenv)?;
-                match state.apply_subs(&expr_ty).normalize() {
-                    Type::Forall(var, _k, body) => Ok(body.subst_ty(&var, ty).normalize()),
-                    other => Err(format!("Type application requires ∀α. τ, got: {}", other)),
-                }
-            }
-
+            // // e [τ] — type application.
+            // Expr::TyApp { expr, ty } => {
+            //     reg.kind_of(ty, kenv)
+            //         .map_err(|e| format!("In type-application argument: {}", e))?;
+            //     let expr_ty = Self::infer(expr, env, state, reg, kenv)?;
+            //     match state.apply_subs(&expr_ty).normalize() {
+            //         Type::Forall(var, _k, body) => Ok(body.subst_ty(&var, ty).normalize()),
+            //         other => Err(format!("Type application requires ∀α. τ, got: {}", other)),
+            //     }
+            // }
             Expr::Let {
                 name,
                 ann,
@@ -1188,6 +1187,10 @@ pub enum Statement {
         ann: Option<Type>,
         value: Expr,
     },
+    LetIntrinsic {
+        name: String,
+        ann: Type,
+    },
     /// `type Name (a: *) (f: * → *) … = Ctor₁ T… | Ctor₂ T… | …`
     ///  OR
     /// `type Name (a: *) … : <ann>`
@@ -1228,6 +1231,7 @@ impl Interpreter {
     }
 
     pub fn process_stmts(&mut self, stmts: &[Statement]) -> Result<Vec<Type>, String> {
+        println!("Processing {:?} statements", stmts);
         stmts
             .iter()
             .map(|stmt| self.process(stmt.clone()))
@@ -1246,6 +1250,10 @@ impl Interpreter {
                 .map(|_| Type::unit()),
             Statement::Let { name, ann, value } => {
                 self.process_let(name, ann, value).map(|_| Type::unit())
+            }
+            Statement::LetIntrinsic { name, ann } => {
+                self.checker.env.insert(name, ann);
+                Ok(Type::unit())
             }
             Statement::Expr(expr) => self.type_of(&expr),
         }
@@ -1573,74 +1581,74 @@ mod tests {
 mod system_f_tests {
     use super::*;
 
-    fn poly_id() -> Expr {
-        Expr::TyLam {
-            ty_param: "α".to_string(),
-            body: Box::new(Expr::Lambda {
-                params: vec![("x".to_string(), Some(Type::ty_var("α")))],
-                body: Box::new(Expr::Ident("x".to_string())),
-                return_type: None,
-            }),
-        }
-    }
+    // fn poly_id() -> Expr {
+    //     Expr::TyLam {
+    //         ty_param: "α".to_string(),
+    //         body: Box::new(Expr::Lambda {
+    //             params: vec![("x".to_string(), Some(Type::ty_var("α")))],
+    //             body: Box::new(Expr::Ident("x".to_string())),
+    //             return_type: None,
+    //         }),
+    //     }
+    // }
 
-    #[test]
-    fn test_ty_lam_produces_forall() {
-        let c = TypeChecker::new();
-        let ty = c.type_of(&poly_id()).unwrap();
-        assert_eq!(
-            ty,
-            Type::Forall(
-                "α".to_string(),
-                Kind::Star,
-                Box::new(Type::Arrow(
-                    Box::new(Type::TyVar("α".to_string())),
-                    Box::new(Type::TyVar("α".to_string())),
-                ))
-            )
-        );
-    }
+    // #[test]
+    // fn test_ty_lam_produces_forall() {
+    //     let c = TypeChecker::new();
+    //     let ty = c.type_of(&poly_id()).unwrap();
+    //     assert_eq!(
+    //         ty,
+    //         Type::Forall(
+    //             "α".to_string(),
+    //             Kind::Star,
+    //             Box::new(Type::Arrow(
+    //                 Box::new(Type::TyVar("α".to_string())),
+    //                 Box::new(Type::TyVar("α".to_string())),
+    //             ))
+    //         )
+    //     );
+    // }
 
-    #[test]
-    fn test_ty_app_int() {
-        let c = TypeChecker::new();
-        let e = Expr::TyApp {
-            expr: Box::new(poly_id()),
-            ty: Box::new(Type::int()),
-        };
-        assert_eq!(
-            c.type_of(&e).unwrap(),
-            Type::arrow(Type::int(), Type::int())
-        );
-    }
+    // #[test]
+    // fn test_ty_app_int() {
+    //     let c = TypeChecker::new();
+    //     let e = Expr::TyApp {
+    //         expr: Box::new(poly_id()),
+    //         ty: Box::new(Type::int()),
+    //     };
+    //     assert_eq!(
+    //         c.type_of(&e).unwrap(),
+    //         Type::arrow(Type::int(), Type::int())
+    //     );
+    // }
 
-    #[test]
-    fn test_ty_app_on_monotype_fails() {
-        let c = TypeChecker::new();
-        let e = Expr::TyApp {
-            expr: Box::new(Expr::Lambda {
-                params: vec![("x".to_string(), Some(Type::int()))],
-                body: Box::new(Expr::Ident("x".to_string())),
-                return_type: None,
-            }),
-            ty: Box::new(Type::int()),
-        };
-        assert!(c.type_of(&e).is_err());
-    }
+    // #[test]
+    // fn test_ty_app_on_monotype_fails() {
+    //     let c = TypeChecker::new();
+    //     let e = Expr::TyApp {
+    //         expr: Box::new(Expr::Lambda {
+    //             params: vec![("x".to_string(), Some(Type::int()))],
+    //             body: Box::new(Expr::Ident("x".to_string())),
+    //             return_type: None,
+    //         }),
+    //         ty: Box::new(Type::int()),
+    //     };
+    //     assert!(c.type_of(&e).is_err());
+    // }
 
-    #[test]
-    fn test_forall_alpha_equivalent() {
-        let c = TypeChecker::new();
-        let expected = Type::Forall(
-            "β".to_string(),
-            Kind::Star,
-            Box::new(Type::Arrow(
-                Box::new(Type::TyVar("β".to_string())),
-                Box::new(Type::TyVar("β".to_string())),
-            )),
-        );
-        assert!(c.check(&poly_id(), &expected).is_ok());
-    }
+    // #[test]
+    // fn test_forall_alpha_equivalent() {
+    //     let c = TypeChecker::new();
+    //     let expected = Type::Forall(
+    //         "β".to_string(),
+    //         Kind::Star,
+    //         Box::new(Type::Arrow(
+    //             Box::new(Type::TyVar("β".to_string())),
+    //             Box::new(Type::TyVar("β".to_string())),
+    //         )),
+    //     );
+    //     assert!(c.check(&poly_id(), &expected).is_ok());
+    // }
 
     #[test]
     fn test_let_polymorphic_two_types() {

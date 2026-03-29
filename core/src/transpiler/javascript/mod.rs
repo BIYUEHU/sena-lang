@@ -27,12 +27,14 @@ impl Transpiler for JavaScriptTranspiler {
 
 pub struct JavaScriptGenerator {
     indentation_level: usize,
+    match_counter: usize,
 }
 
 impl JavaScriptGenerator {
     pub fn new() -> Self {
         Self {
             indentation_level: 0,
+            match_counter: 0,
         }
     }
 
@@ -425,6 +427,7 @@ impl CodeGenerator for JavaScriptGenerator {
                 // TODO: 处理导出语句
                 "// Export statement not implemented".to_string()
             }
+            CheckedStmt::LetIntrinsic { .. } => "".to_string(),
         }
     }
 
@@ -495,7 +498,10 @@ impl CodeGenerator for JavaScriptGenerator {
             //     "print" => "console.log".to_string(),
             //     _ => value.clone(),
             // },
-            _ => unreachable!(),
+            x => {
+                eprintln!("{:?}", x);
+                unreachable!();
+            }
         }
     }
 
@@ -518,12 +524,34 @@ impl CodeGenerator for JavaScriptGenerator {
     }
 
     fn generate_pattern_match(&mut self, expr: &CheckedExpr, cases: &[CheckedCase]) -> String {
-        let mut conditions = Vec::new();
+        let raw_str = self.generate_expression(expr);
 
+        let is_simple = matches!(
+            expr,
+            CheckedExpr::Ident { .. } | CheckedExpr::Literal { .. }
+        );
+
+        let (scrutinee_expr, wrapper): (CheckedExpr, Option<String>) = if is_simple {
+            (expr.clone(), None)
+        } else {
+            self.match_counter += 1;
+            let temp = format!("_s{}", self.match_counter);
+            let temp_expr = CheckedExpr::Ident {
+                value: temp.clone(),
+                type_annotation: TypeObject::Any,
+            };
+            (
+                temp_expr,
+                Some(format!("(({}) => ___BODY___)({})", temp, raw_str)),
+            )
+        };
+
+        let mut conditions = Vec::new();
         for case in cases {
             let body = self.generate_expression(&case.body);
-            let condition = self.generate_pattern_guard(expr, &case.pattern, &case.guard);
-            let split: Vec<&str> = condition.split("__BINDINGS__").into_iter().collect();
+            let condition =
+                self.generate_pattern_guard(&scrutinee_expr, &case.pattern, &case.guard);
+            let split: Vec<&str> = condition.split("__BINDINGS__").collect();
             conditions.push(if split.len() == 1 {
                 format!("{} ? {}", condition, body)
             } else {
@@ -533,14 +561,17 @@ impl CodeGenerator for JavaScriptGenerator {
                     "{} ? (() => {{ {}; return {}; }})()",
                     condition, bindings, body
                 )
-            })
+            });
         }
-
         conditions.push(
             "(() => { throw new MihamaError(\"Match pattern not exhaustive\") })()".to_string(),
         );
 
-        conditions.join(" :\n  ")
+        let body = conditions.join(" :\n  ");
+        match wrapper {
+            Some(w) => w.replace("___BODY___", &body),
+            None => body,
+        }
     }
 
     fn curry_function(&self, params: &[String], body: &str) -> String {

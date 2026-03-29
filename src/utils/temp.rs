@@ -230,7 +230,14 @@ fn convert_stmt(stmt: Stmt) -> Option<ttt::Statement> {
         Stmt::Export { body, .. } => convert_stmt(*body),
 
         // 裸表达式语句在顶层没有对应物，忽略
-        Stmt::Expr(_) => None,
+        Stmt::Expr(expr) => Some(ttt::Statement::Expr(convert_expr(expr))),
+        Stmt::LetIntrinsic {
+            name,
+            type_annotation,
+        } => Some(ttt::Statement::LetIntrinsic {
+            name,
+            ann: convert_type(type_annotation),
+        }),
     }
 }
 

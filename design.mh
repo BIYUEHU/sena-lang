@@ -1,0 +1,73 @@
+// Algebra Data
+type MyType = MkMyType
+type Color = Red | Green | Blue
+type List: Int -> Kind = [T] Nil | Cons(T, List(T))
+
+
+// Generalized Algebraic Data Types
+type Expr: Kind -> Kind = [T]
+  | Value: [T] T -> Expr(T)
+  | NumOp:  Expr(Int) -> Expr(Int) -> Expr(Int)
+  | LogicOp: Expr(Bool) -> Expr(Bool) -> Expr(Bool)
+  | ListOp: [T] Expr(List(T)) -> Expr(List(T)) -> Expr(List(T))
+
+// Structural Types
+struct Point: Kind = MkPoint { x: Int, y: Int }
+struct Box: Kind -> Kind = [T] MkBox(T)
+let p = MkPoint { x: 1, y: 2 }
+let b = MkBox[Int](p.x)
+let v = b.0
+
+/// Equals to:
+type Point = MkPoint (Int, Int)
+let Point::get_prop_x: Point -> Int = (p) =>
+  match p then | MkPoint(x, _) => x
+let Point::get_prop_y: Point -> Int = (p) =>
+  match p then | MkPoint(_, y) => y
+type Box = [T] MkBox(Int)
+let Box::get_prop_0: [T] Box(T) -> T = (box) =>
+  match box then | MkBox(x) => x
+let p = MkPoint(1, 2)
+let b = MkBox(Point::get_prop_x(p))
+let v = Box::get_prop_0(b)
+
+
+// Object-Oriented Programming
+class Animal: Kind -> Kind = [T] MkAnimal(T)
+  | name: String
+  | priv symbol: T
+  | IS_ANIMAL = true
+  | get_name: [T] Animal[T] -> String = (self) => "My name is " ++ self.name
+  | try_symbol: [T] Animal[T] -> T = (self) => self.symbol
+
+/// Equals to:
+type Animal = [T] MkAnimal(String, T)
+let Animal::get_prop_name: [T] Animal(T) -> String = (self) =>
+  match self then | MkAnimal(name, _) => name
+let Animal::IS_ANIMAL: Bool = true
+let Animal::get_name = (self) => "My name is " ++ Animal::get_prop_name(self)
+let Animal::try_symbol: [T] Animal(T) -> T = (self) => {
+  let Animal::get_prop_symbol: [T] Animal(T) -> T = (self) =>
+    match self then | MkAnimal(_, symbol) => symbol
+  Animal::get_prop_symbol(self)
+}
+
+
+// Traits
+trait Functor: Kind -> Kind = [F: Kind -> Kind]
+  | map: [A, B] F(A) -> (A -> B) -> F(B)
+trait Monad: Kind -> Kind = [F: Kind -> Kind impl Functor]
+  | bind: [A, B] F(A) -> (A -> F(B)) -> F(B)
+  | pure: [A] A -> F(A)
+trait Show: Kind -> Kind = [A] MkShow
+  | show: A -> String
+
+
+// Implemenation
+impl Functor(List)
+  | map = (list, f) =>
+    match list then | Nil => Nil | Cons(head, tail) => Cons(f(head), map(tail, f))
+impl Monad(List)
+  | bind = (list, f) =>
+    match list then | Nil => Nil | Cons(head, tail) => append(f(head), bind(tail, f))
+  | pure = (a) => Cons(a, Nil)

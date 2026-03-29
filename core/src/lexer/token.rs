@@ -54,6 +54,7 @@ pub enum Token {
     From,
     As,
     Abstract,
+    Intrinsic,
 
     LineComment(String),
     BlockComment(String),
@@ -124,6 +125,7 @@ impl Display for Token {
             Token::From => write!(f, "from"),
             Token::As => write!(f, "as"),
             Token::Abstract => write!(f, "abstract"),
+            Token::Intrinsic => write!(f, "intrinsic"),
 
             Token::LineComment(s) => write!(f, "//{}", s),
             Token::BlockComment(s) => write!(f, "/*{}*/", s),

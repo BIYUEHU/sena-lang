@@ -121,6 +121,10 @@ pub enum CheckedStmt {
         type_annotation: TypeObject,
         value: CheckedExpr,
     },
+    LetIntrinsic {
+        name: String,
+        type_annotation: TypeObject,
+    },
     Type {
         name: String,
         params: Vec<String>,
