@@ -1,6 +1,6 @@
 use mihama_core::parser::ast::{
-    Expr as OldExpr, Literal as OldLiteral, MatchCase, Pattern, Stmt, TypeExpr, TypeVariant,
-    TypeVariantFields, UnsafeProgram,
+    Expr as OldExpr, Literal as OldLiteral, Stmt, TypeExpr, TypeVariant, TypeVariantFields,
+    UnsafeProgram,
 };
 use ttt::{self, Kind, Type};
 

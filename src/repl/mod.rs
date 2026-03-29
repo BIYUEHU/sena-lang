@@ -1,6 +1,5 @@
 use crate::utils::{
-    eval_code, eval_code2, get_checked_ast, parse_code, transofrm_code, unsafe_eval_code,
-    RunningMode,
+    eval_code2, get_checked_ast, parse_code, transofrm_code, unsafe_eval_code, RunningMode,
 };
 use mihama_core::checker::Checker;
 use mihama_core::env::{new_checker_env, new_evaluator_env};
@@ -29,6 +28,7 @@ pub fn run_repl(initial_mode: RunningMode, verbose: bool) {
     let env = new_evaluator_env();
     let mut evaluator = Evaluator::new(env);
     let mut checker = Checker::new(new_checker_env());
+    let mut inter = Interpreter::new();
 
     loop {
         print!("{}", PROMPT);
@@ -51,7 +51,14 @@ pub fn run_repl(initial_mode: RunningMode, verbose: bool) {
 
         // 处理REPL命令
         if command.starts_with(':') {
-            match handle_repl_command(command, &mut mode, &mut evaluator, &mut checker, verbose) {
+            match handle_repl_command(
+                command,
+                &mut mode,
+                &mut evaluator,
+                &mut checker,
+                &mut inter,
+                verbose,
+            ) {
                 ReplAction::Continue => continue,
                 ReplAction::Exit => break,
                 ReplAction::Error(msg) => {
@@ -69,7 +76,14 @@ pub fn run_repl(initial_mode: RunningMode, verbose: bool) {
         };
 
         // 执行代码
-        execute_code(&code, &mode, &mut checker, &mut evaluator, show_types);
+        execute_code(
+            &code,
+            &mode,
+            &mut checker,
+            &mut evaluator,
+            &mut inter,
+            show_types,
+        );
     }
 
     println!("Goodbye!");
@@ -86,6 +100,7 @@ fn handle_repl_command(
     mode: &mut RunningMode,
     evaluator: &mut Evaluator,
     checker: &mut Checker,
+    inter: &mut Interpreter,
     verbose: bool,
 ) -> ReplAction {
     let parts: Vec<&str> = command.split_whitespace().collect();
@@ -132,7 +147,7 @@ fn handle_repl_command(
             let fname = parts[1];
             match fs::read_to_string(fname) {
                 Ok(code) => {
-                    execute_code(&code, mode, checker, evaluator, false);
+                    execute_code(&code, mode, checker, evaluator, inter, false);
                 }
                 Err(err) => eprintln!("REPL error: {}", err),
             }
@@ -184,6 +199,7 @@ fn execute_code(
     mode: &RunningMode,
     checker: &mut Checker,
     evaluator: &mut Evaluator,
+    inter: &mut Interpreter,
     show_types: bool,
 ) {
     match *mode {
@@ -224,14 +240,12 @@ fn execute_code(
         //     }
         //     Err(err) => eprintln!("{}", err),
         // },
-        RunningMode::Evaluator => {
-            let mut inter = Interpreter::new();
-            if let Err(err) = eval_code2(code, &mut inter) {
-                eprintln!("{}", err);
-            } else {
-                print!("ok")
+        RunningMode::Evaluator => match eval_code2(code, inter) {
+            Ok(typ) => {
+                print!("{} : \n", typ)
             }
-        }
+            Err(err) => eprintln!("Type error: {}", err),
+        },
         RunningMode::UnsafeEvaluator => match unsafe_eval_code(code, evaluator) {
             Ok(val) => {
                 if show_types {

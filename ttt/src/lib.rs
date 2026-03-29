@@ -1207,6 +1207,7 @@ pub enum Statement {
         ann: Option<Type>,
         constructors: Vec<(String, Vec<Type>)>,
     },
+    Expr(Expr),
 }
 
 // ==============================================================================
@@ -1226,22 +1227,27 @@ impl Interpreter {
         }
     }
 
-    pub fn process_stmts(&mut self, stmts: &[Statement]) -> Result<(), String> {
+    pub fn process_stmts(&mut self, stmts: &[Statement]) -> Result<Vec<Type>, String> {
         stmts
             .iter()
             .map(|stmt| self.process(stmt.clone()))
             .collect()
     }
 
-    pub fn process(&mut self, stmt: Statement) -> Result<(), String> {
+    pub fn process(&mut self, stmt: Statement) -> Result<Type, String> {
         match stmt {
             Statement::Type {
                 name,
                 params,
                 ann,
                 constructors,
-            } => self.process_type(name, params, ann, constructors),
-            Statement::Let { name, ann, value } => self.process_let(name, ann, value),
+            } => self
+                .process_type(name, params, ann, constructors)
+                .map(|_| Type::unit()),
+            Statement::Let { name, ann, value } => {
+                self.process_let(name, ann, value).map(|_| Type::unit())
+            }
+            Statement::Expr(expr) => self.type_of(&expr),
         }
     }
 

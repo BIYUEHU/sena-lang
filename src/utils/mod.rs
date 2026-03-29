@@ -12,7 +12,7 @@ use mihama_core::{
     utils::to_checked_stmt,
 };
 use std::fmt::Display;
-use ttt::Interpreter;
+use ttt::{Interpreter, Type};
 
 use crate::utils::temp::convert_program;
 
@@ -118,10 +118,11 @@ pub fn eval_code(
         .map_err(|err| format!("Evaluator error: {}", err))
 }
 
-pub fn eval_code2(code: &str, inter: &mut Interpreter) -> Result<(), String> {
+pub fn eval_code2(code: &str, inter: &mut Interpreter) -> Result<Type, String> {
     let program = convert_program(get_ast(code)?);
     inter
         .process_stmts(program.as_slice())
+        .map(|vec| vec.last().unwrap_or(&Type::unit()).clone())
         .map_err(|err| format!("Checker error: {}", err))
 }
 
